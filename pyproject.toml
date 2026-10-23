@@ -1,0 +1,21 @@
+[project]
+name = "creek"
+version = "0.1.0"
+description = "A quiet, always-flowing music stream for the local network, joined from the terminal"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "numpy",
+    "yt-dlp[default]",
+]
+
+[dependency-groups]
+dev = ["pytest", "httpx"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

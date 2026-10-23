@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+music/
+data/
+links.txt
+.pytest_cache/
