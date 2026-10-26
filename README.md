@@ -1,9 +1,10 @@
 # creek
 
 A quiet, always-flowing music stream for the local network. One station plays continuously; anyone can
-slip in from a terminal mid-song and leave whenever they like. No accounts, no names, no chat, no choosing
-songs: it shuffles a shared pool forever, crossfading between tracks at an even volume. Listeners can drop
-one of six emoji (🌊 💛 ✨ 🔥 😌 🎶) that drift along everyone's status line. That's it.
+slip in from a terminal mid-song (Linux or Windows, no browser) and leave whenever they like. No accounts,
+no names, no chat. It shuffles a shared pool forever, crossfading between tracks at an even volume, and
+everyone listening has the same say: post a song to play soon, pause, skip, go back, or clear the queue.
+Listeners can also drop one of six emoji (🌊 💛 ✨ 🔥 😌 🎶) that drift along everyone's status line.
 
 ## Run the station
 
@@ -30,12 +31,14 @@ While listening (same keys on Linux and Windows, `?` shows them):
 | **/** | find a song already on the station, then press its number to queue it |
 | **space** / **n** / **p** | pause or play / next / previous, for everyone |
 | **l** | what's on, what's up next, what played before |
+| **c** | clear the up-next queue for everyone (asks y/n first; the songs stay in the shuffle) |
 | **1–6** | drop an emoji |
 | **+ / -** | volume (Windows; on Linux use `--volume N` or the system volume) |
 | **q** | leave (Ctrl+C works too) |
 
-The same things work as one-off commands, handy for keyboard shortcuts: `creek pause | play | next | prev`,
-`creek queue`, `creek find <words>`, `creek post <link | #id>`.
+The same things work as one-off commands, handy for keyboard shortcuts: `creek pause | play | next | prev | clear`,
+`creek queue`, `creek find <words>`, `creek post <link | #id>`. `creek --quiet` plays audio only (no status
+line, no keys); `creek --volume N` sets the starting volume.
 
 **Shared controls.** Anyone listening can pause, skip or go back, for everyone; others see a short anonymous
 note ("someone skipped ahead"). Two guardrails keep it calm: one press per second per person, and when two
@@ -45,7 +48,6 @@ to keep the controls to the station laptop.
 **How quick.** Whoever presses pause hears it at once (their own player freezes on the spot); everyone else
 hears it about 1.3 s later, and play/next/prev land in about 1 s. That second is each listener's buffer
 against Wi-Fi hiccups (`JOIN_BURST_SEC` in `creek/config.py`).
-`creek --quiet` plays audio only (no status line, no keys); `creek --volume N` sets the starting volume.
 
 **What listeners need**
 - Linux: `curl` plus any of `ffplay` / `mpv` / `mpg123`, or just PipeWire/PulseAudio/ALSA (`pw-play`,
@@ -61,6 +63,11 @@ it to play **after the current song**, in the order songs were posted; everyone'
 up next. Each person can have one song waiting at a time (post another once yours has played), the queue
 holds up to 20, and posted songs must be 30 s – 15 min. Whole playlists go in with `creek add` instead.
 
+Songs already on the station can be queued the same way: press **/**, type a few words, then the song's
+number (or `creek find <words>` and `creek post #<id>`). **c** clears the queue for everyone after a y/n
+check; cleared songs stay in the shuffle, and a song still downloading when the queue is cleared joins the
+shuffle instead of the queue.
+
 ## Adding music
 
 - **Folder**: drop files or whole folders into `~/creek/music/`. Picked up within 30 s.
@@ -74,27 +81,24 @@ Every track's loudness is measured once and evened out (about -16 LUFS), and lea
 trimmed so the 6 s crossfades land on music. With no music at all the stream plays soft "quiet water" noise
 so it never stops.
 
-## Operator controls (on the station machine only)
+## On the station laptop
 
-These change the stream for everyone, so the station only accepts them from its own laptop.
+The shared controls work here too (`uv run python -m creek pause | play | next | prev | clear | now`), with
+no rate limit. A few things only the station laptop can do:
 
 ```sh
-uv run python -m creek now                    # what's flowing, how many are here
 uv run python -m creek play <link>            # add a YouTube link (if new) and play it right away
-uv run python -m creek play <id>              # crossfade into a song from `list` now
-uv run python -m creek pause                  # fade out; listeners stay connected and hear silence
-uv run python -m creek play                   # carry on where it paused
-uv run python -m creek next                   # crossfade to the next song (`skip` works too)
-uv run python -m creek prev                   # back to the previous song (again and again)
+uv run python -m creek play <id>              # crossfade into a song from `list` now, skipping the queue
 uv run python -m creek list                   # every song in rotation, with ids
 uv run python -m creek remove <id|current>    # take one out for good (contributed files are deleted)
-uv run python -m creek status                 # library counts, recent downloads
+uv run python -m creek status                 # library counts, the up-next queue, recent downloads
 ```
 
-A song you play on request counts as its turn, so the shuffle won't bring it straight back.
+A song played on request counts as its turn, so the shuffle won't bring it straight back.
 
-Set `CREEK_ACCEPT=0` to stop accepting contributions, `CREEK_PORT` to change the port, `CREEK_HOME` to
-keep music/data elsewhere.
+Settings (environment variables when starting the station): `CREEK_OPEN_CONTROLS=0` keeps pause/skip/clear
+to the station laptop, `CREEK_ACCEPT=0` stops new music being added, `CREEK_PORT` changes the port,
+`CREEK_HOME` keeps music and data somewhere else.
 
 ## Keeping it running
 
@@ -132,10 +136,15 @@ keep music/data elsewhere.
 ## Layout
 
 ```
-creek/engine.py    playout: decode → crossfade → pace to wall clock → MP3 encoder
-creek/library.py   folder scanner (SQLite) + balanced shuffle bag
+creek/engine.py    playout: decode → crossfade → pace to wall clock → MP3 encoder; pause, next, prev
+creek/library.py   folder scanner (SQLite), search, balanced shuffle bag
+creek/upnext.py    the up-next queue listeners post into
+creek/room.py      shared state: now playing, reactions, control rate limits, notices
 creek/ingest.py    links.txt, yt-dlp downloads, uploads
-creek/server.py    HTTP: /stream.mp3, /stream.pcm, /now, /react, /add/*, /op/*, client scripts
+creek/media.py     ffmpeg/ffprobe: probing, loudness, decoding
+creek/audio.py     crossfades, fades, silence trimming, MP3 frame sync
+creek/server.py    HTTP: /stream.mp3 /stream.pcm /now /queue /search /post /ctl/* /react /add/* /op/*
+creek/config.py    every tunable, with CREEK_* overrides
 creek/clients/     join.sh (Linux bootstrap), client.py (Linux client), win.ps1 (Windows client)
 tests/             uv run pytest
 ```

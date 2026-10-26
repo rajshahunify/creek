@@ -1,4 +1,4 @@
-"""python -m creek [serve | now | play [id|link] | pause | next | prev | list | remove <id|current> | status]"""
+"""python -m creek [serve | now | play [id|link] | pause | next | prev | clear | list | remove <id|current> | status]"""
 
 import json
 import socket
@@ -20,6 +20,7 @@ USAGE = """usage: python -m creek [command]
   pause                fade out for everyone; listeners stay connected
   next                 crossfade to the next song (also: skip)
   prev                 back to the previous song
+  clear                empty the up-next queue (the songs stay on the station)
   list                 every song in rotation, with ids
   remove <id|current>  take a song out of rotation for good
   status               library counts and recent downloads
@@ -51,7 +52,7 @@ def serve():
   share this:   curl http://{ip}:{PORT}            (or http://{name}.local:{PORT})
   music folder: {MUSIC}
   links file:   {LINKS}
-  controls:     uv run python -m creek play [id|link] | pause | next | prev | now | list | status
+  controls:     uv run python -m creek play [id|link] | pause | next | prev | clear | now | list | status
 """, flush=True)
     uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False, log_level="warning",
                 timeout_graceful_shutdown=2)
@@ -74,6 +75,9 @@ def main(argv: list[str]):
     elif cmd == "prev":
         call("POST", "/op/prev")
         print("going back…")
+    elif cmd == "clear":
+        n = call("POST", "/op/clear")["cleared"]
+        print(f"cleared the queue ({n} song{'s' if n != 1 else ''}; they stay in the shuffle)")
     elif cmd == "pause":
         call("POST", "/op/pause")
         print("paused (listeners stay connected; `play` carries on)")

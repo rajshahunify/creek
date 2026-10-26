@@ -53,3 +53,26 @@ def test_engine_uses_the_queue_it_is_given_even_when_empty():
     from creek.engine import Engine
     q = UpNext()
     assert Engine(library=None, room=None, on_mp3=print, on_pcm=print, upnext=q).upnext is q
+
+
+def test_clear_empties_the_queue_and_stops_downloads_in_flight_from_landing():
+    q = UpNext()
+    q.reserve("ana")
+    q.add(1, "ana", "Song A")
+    q.reserve("ben")                                   # ben's song is still downloading
+    assert q.clear() == 2
+    assert q.titles() == [] and q.pop() is None
+    assert q.add(2, "ben", "Song B") == 0              # finished after the clear: not queued
+    assert len(q) == 0
+    assert q.reserve("ben") is None and q.reserve("ana") is None   # both can post again
+    assert q.add(3, "ana", "Song C") == 1              # new posts queue as normal
+    assert q.clear() == 2                              # ana's queued + ben's reservation
+    assert q.clear() == 0                              # nothing left
+
+
+def test_ben_can_post_again_after_his_cleared_download_lands():
+    q = UpNext()
+    q.reserve("ben")
+    q.clear()
+    q.add(2, "ben", "late")
+    assert q.reserve("ben") is None

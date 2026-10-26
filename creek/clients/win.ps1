@@ -9,7 +9,7 @@ $CreekUsage = @"
 creek                      join the stream (press ? while listening for the keys)
 creek --quiet              audio only: no status line, no keys
 creek --volume N           start at volume N, 0-100 (default 60)
-creek pause | play | next | prev    control the stream for everyone
+creek pause | play | next | prev | clear    control the stream for everyone
 creek queue                what's on, what's up next, what played before
 creek find <words>         look for a song on the station
 creek post <link | number from find>   queue a song to play soon
@@ -18,12 +18,19 @@ creek add <link|file|folder> ...   add music to the shuffle
 
 $CreekHelp = @(
     '  keys   a  post a song link (plays soon)      /  find a song on the station to queue',
-    '         space  pause / play    n  next    p  previous    l  what''s on & up next',
+    '         space  pause / play    n  next    p  previous    l  what''s on & up next    c  clear the queue',
     '         1-6  drop an emoji     +/-  volume    ?  this help    q  leave'
 )
 $CreekDone = @{ pause = 'paused for everyone'; resume = 'playing'; next = 'next song'; prev = 'previous song' }
 $CreekSeen = @{ pause = 'someone paused the stream'; resume = 'someone pressed play'
-                next = 'someone skipped ahead'; prev = 'someone went back a song' }
+                next = 'someone skipped ahead'; prev = 'someone went back a song'
+                clear = 'someone cleared the up-next queue' }
+
+function Format-CreekCleared($n) {
+    $s = 's'
+    if ($n -eq 1) { $s = '' }
+    return "queue cleared ($n song$s; they stay in the shuffle)"
+}
 
 function Invoke-Creek {
     $base = 'http://__CREEK_HOST__'
@@ -74,7 +81,9 @@ function Format-CreekQueue($q) {
     for ($i = 0; $i -lt $next.Count; $i++) {
         $label = ''
         if ($i -eq 0) { $label = 'up next' }
-        $lines += ('  {0,-8} {1}. {2}' -f $label, ($i + 1), $next[$i])
+        $hint = ''
+        if ($i -eq 0) { $hint = '      (c clears the queue)' }
+        $lines += ('  {0,-8} {1}. {2}{3}' -f $label, ($i + 1), $next[$i], $hint)
     }
     if ($next.Count -eq 0) { $lines += '  up next  nothing posted yet, so the shuffle picks' }
     $lines += "  then     the shuffle, $($q.songs) songs"
@@ -87,11 +96,11 @@ function Invoke-CreekCommand($base, $argv) {
     $rest = @($argv | Select-Object -Skip 1)
     $id = Get-CreekId
     try {
-        if (@('pause', 'play', 'next', 'prev') -contains $cmd -and $rest.Count -eq 0) {
+        if (@('pause', 'play', 'next', 'prev', 'clear') -contains $cmd -and $rest.Count -eq 0) {
             $action = $cmd
             if ($cmd -eq 'play') { $action = 'resume' }
-            [void](Invoke-RestMethod -Method Post -Uri "$base/ctl/${action}?id=$id" -UseBasicParsing -TimeoutSec 5)
-            Write-Host $CreekDone[$action]
+            $r = Invoke-RestMethod -Method Post -Uri "$base/ctl/${action}?id=$id" -UseBasicParsing -TimeoutSec 5
+            if ($action -eq 'clear') { Write-Host (Format-CreekCleared $r.cleared) } else { Write-Host $CreekDone[$action] }
         }
         elseif ($cmd -eq 'queue') { Format-CreekQueue (Invoke-RestMethod -Uri "$base/queue" -UseBasicParsing) | ForEach-Object { Write-Host $_ } }
         elseif ($cmd -eq 'find' -and $rest.Count -gt 0) {
@@ -324,6 +333,20 @@ function Start-CreekListening($base, $volume, $quiet) {
                         catch { $flash = Get-CreekError $_; $flashUntil = $t.AddSeconds(3) }
                     }
                     elseif ($ch -eq '?' -or $ch -eq 'h') { Write-CreekLines $CreekHelp }
+                    elseif ($ch -eq 'c') {
+                        # it empties everyone's queue, so ask first
+                        Write-CreekLines @('clear the up-next queue for everyone? (y/n)')
+                        $yes = [Console]::ReadKey($true).KeyChar -eq 'y'
+                        if ($yes) {
+                            try {
+                                $r = Invoke-RestMethod -Method Post -Uri "$base/ctl/clear?id=$id" -UseBasicParsing -TimeoutSec 3
+                                $mine[[string]$r.notice] = $true
+                                $flash = Format-CreekCleared $r.cleared
+                            } catch { $flash = Get-CreekError $_ }
+                        } else { $flash = '~ never mind ~' }
+                        $flashUntil = [DateTime]::Now.AddSeconds(4)
+                        $lastPoll = [DateTime]::MinValue
+                    }
                     elseif ($ch -eq '+' -or $ch -eq '=') { Set-CreekVolume $p 10 }
                     elseif ($ch -eq '-') { Set-CreekVolume $p -10 }
                     elseif ($ch -eq '/') {

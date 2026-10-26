@@ -29,7 +29,7 @@ MAX_UPLOAD = 50 * 1024 * 1024
 USAGE = """creek                      join the stream (press ? while listening for the keys)
 creek --quiet              audio only: no status line, no keys (fine to run in the background)
 creek --volume N           start at volume N, 0-100 (default 60)
-creek pause | play | next | prev    control the stream for everyone
+creek pause | play | next | prev | clear    control the stream for everyone
 creek queue                what's on, what's up next, what played before
 creek find <words>         look for a song on the station
 creek post <link | number from find>   queue a song to play soon
@@ -37,12 +37,14 @@ creek add <link|file|folder> ...   add music to the shuffle"""
 
 HELP = [
     "  keys   a  post a song link (plays soon)      /  find a song on the station to queue",
-    "         space  pause / play    n  next    p  previous    l  what's on & up next",
+    "         space  pause / play    n  next    p  previous    l  what's on & up next    c  clear the queue",
     "         1-6  drop an emoji     ?  this help    q  leave",
 ]
-DONE = {"pause": "⏸ paused for everyone", "resume": "▶ playing", "next": "⏭ next song", "prev": "⏮ previous song"}
+DONE = {"pause": "⏸ paused for everyone", "resume": "▶ playing", "next": "⏭ next song", "prev": "⏮ previous song",
+        "clear": "queue cleared"}
 SEEN = {"pause": "⏸ someone paused the stream", "resume": "▶ someone pressed play",
-        "next": "⏭ someone skipped ahead", "prev": "⏮ someone went back a song"}
+        "next": "⏭ someone skipped ahead", "prev": "⏮ someone went back a song",
+        "clear": "someone cleared the up-next queue"}
 
 
 def url(path: str) -> str:
@@ -76,10 +78,14 @@ def mmss(sec) -> str:
     return "%d:%02d" % divmod(int(sec or 0), 60)
 
 
+def cleared_text(n: int) -> str:
+    return f"queue cleared ({n} song{'s' if n != 1 else ''}; they stay in the shuffle)"
+
+
 def queue_lines(q: dict) -> list[str]:
     lines = [f"  now      {'⏸ ' if q['paused'] else '♪ '}{q['now']}"]
     for i, song in enumerate(q["upnext"], 1):
-        lines.append(f"  {'up next' if i == 1 else '':8} {i}. {song}")
+        lines.append(f"  {'up next' if i == 1 else '':8} {i}. {song}" + ("      (c clears the queue)" if i == 1 else ""))
     if not q["upnext"]:
         lines.append("  up next  nothing posted yet, so the shuffle picks")
     lines.append(f"  then     the shuffle, {q['songs']} songs")
@@ -130,6 +136,7 @@ class Listener:
         self.flash = ("", 0.0)               # short-lived message and when it expires
         self.typing: tuple[str, str] | None = None   # ("post" | "find", text so far)
         self.picks: list[dict] | None = None         # search results waiting for a number
+        self.asking: tuple[str, str] | None = None   # (question, control) waiting for y/n
         self.mine: set[int] = set()          # notices we caused ourselves (no "someone paused" for those)
         self.last_notice: int | None = None
         self.drops: list[list] = []          # [position, glyph]
@@ -248,6 +255,8 @@ class Listener:
         except (OSError, ValueError) as e:
             return self.say_soon(error_text(e), 3)
         self.mine.add(r.get("notice"))
+        if action == "clear":
+            return self.say_soon(cleared_text(r["cleared"]), 4)
         if action == "pause":
             self.hold()
         elif self.held:
@@ -331,6 +340,12 @@ class Listener:
             if ch.isdigit() and 1 <= int(ch) <= len(hits):
                 return bg(self.queue_pick, hits[int(ch) - 1])
             return self.say_soon("~ never mind ~", 1.5)
+        if self.asking is not None:
+            _, action = self.asking
+            self.asking = None
+            if ch in ("y", "Y"):
+                return bg(self.control, action)
+            return self.say_soon("~ never mind ~", 1.5)
         if ch in ("q", "Q"):
             self.stop.set()
         elif ch in ("a", "A"):
@@ -343,6 +358,8 @@ class Listener:
             bg(self.control, {" ": "toggle", "n": "next", "p": "prev"}[ch])
         elif ch in ("l", "L"):
             bg(self.show_queue)
+        elif ch in ("c", "C"):
+            self.asking = ("clear the up-next queue for everyone? (y/n)", "clear")
         elif ch in ("?", "h"):
             self.say(HELP)
 
@@ -399,6 +416,8 @@ class Listener:
             return label + text[-max(10, cols - RIVER_WIDTH - len(label) - 4):] + "_"
         if self.picks is not None:
             return f"press 1-{len(self.picks)} to queue one of those, any other key to cancel"
+        if self.asking is not None:
+            return self.asking[0]
         if self.offline:
             return "~ waiting for the stream ~"
         if self.flash[0] and time.monotonic() < self.flash[1]:
@@ -501,10 +520,10 @@ def command(argv: list[str]) -> bool:
     """One-shot commands; returns False when argv isn't one."""
     cmd, args = argv[0], argv[1:]
     try:
-        if cmd in ("pause", "play", "next", "prev") and not args:
+        if cmd in ("pause", "play", "next", "prev", "clear") and not args:
             action = "resume" if cmd == "play" else cmd
-            call(f"/ctl/{action}?id={listener_id()}", method="POST", data=b"")
-            print(DONE[action])
+            r = call(f"/ctl/{action}?id={listener_id()}", method="POST", data=b"")
+            print(cleared_text(r["cleared"]) if action == "clear" else DONE[action])
         elif cmd == "queue" and not args:
             print("\n".join(queue_lines(call("/queue"))))
         elif cmd == "find" and args:

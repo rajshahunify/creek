@@ -170,7 +170,8 @@ def index(request: Request):
 
   while listening:   a  post a song link (plays soon)     /  find a song on the station
                      space  pause / play     n  next     p  previous
-                     l  what's on & up next     1-6  drop an emoji     ?  help     q  leave
+                     l  what's on & up next     c  clear the queue     1-6  drop an emoji
+                     ?  all keys     q  leave
 
   now flowing:    {flowing}  ·  {now['here']} here
 """
@@ -279,6 +280,8 @@ def post(request: Request, url: str | None = None, track: int | None = None, id:
         if cur and cur.id == tid:
             return "that one's playing right now"
         place = st.upnext.add(tid, poster, _label(t.title, t.artist))
+        if place == 0:
+            return "the queue was cleared while it downloaded - it joined the shuffle instead"
         return "up next" if place == 1 else f"queued - plays after {place - 1} other{'s' if place > 2 else ''}"
 
     if track is not None:
@@ -368,7 +371,7 @@ def op_list(request: Request):
     return AsciiJSON(station(request).library.list())
 
 
-CONTROLS = ("pause", "resume", "toggle", "next", "prev")
+CONTROLS = ("pause", "resume", "toggle", "next", "prev", "clear")
 
 
 def _apply(st: Station, action: str) -> dict:
@@ -377,6 +380,11 @@ def _apply(st: Station, action: str) -> dict:
         action = "resume" if engine.paused else "pause"
     if action == "prev" and not engine.prev():
         raise HTTPException(409, "nothing has played yet")
+    if action == "clear":
+        if not (cleared := st.upnext.clear()):
+            raise HTTPException(409, "the queue is already empty")
+        return {"action": action, "notice": st.room.announce(action), "cleared": cleared,
+                "paused": engine.paused}
     if action == "next":
         engine.skip()
     elif action == "pause":
@@ -388,7 +396,7 @@ def _apply(st: Station, action: str) -> dict:
 
 @app.post("/ctl/{action}", response_class=AsciiJSON)
 def ctl(request: Request, action: str, id: str = "anon"):
-    """pause / resume / toggle / next / prev, for every listener (unless CREEK_OPEN_CONTROLS=0)."""
+    """pause / resume / toggle / next / prev / clear, for every listener (unless CREEK_OPEN_CONTROLS=0)."""
     if action not in CONTROLS:
         raise HTTPException(404, "unknown control")
     st = station(request)
