@@ -4,7 +4,8 @@ import threading
 import time
 from collections import deque
 
-from .config import CONTROL_MIN_GAP_SEC, JUMP_GUARD_SEC, REACT_MIN_GAP_SEC, REACTIONS, SEEK_MIN_GAP_SEC
+from .config import (CONTROL_MIN_GAP_SEC, JUMP_GUARD_SEC, REACT_MIN_GAP_SEC, REACTIONS, SEARCH_MIN_GAP_SEC,
+                     SEEK_MIN_GAP_SEC)
 
 
 class Room:
@@ -18,6 +19,7 @@ class Room:
         self._ctl_last: dict[str, float] = {}
         self._jump_at = float("-inf")
         self._last: dict[str, float] = {}                          # client id -> last reaction time
+        self._searched: dict[str, float] = {}                      # client id -> last YouTube search
         self._recent: deque[float] = deque(maxlen=5)               # global cap: 5 reactions per second
 
     def set_track(self, title: str, artist: str, quiet: bool):
@@ -32,17 +34,29 @@ class Room:
         """May this listener use a control right now? Returns why not, or None."""
         now = time.monotonic() if now is None else now
         with self.lock:
-            gap = SEEK_MIN_GAP_SEC if action in ("fwd", "back") else CONTROL_MIN_GAP_SEC
+            # arrows, the progress bar and dragging songs around can come a few a second
+            gap = SEEK_MIN_GAP_SEC if action in ("fwd", "back", "seek", "move", "remove") else CONTROL_MIN_GAP_SEC
             if now - self._ctl_last.get(client_id, float("-inf")) < gap:
                 return "easy - one press at a time"
-            if action in ("next", "prev") and now - self._jump_at < JUMP_GUARD_SEC:
+            if action in ("next", "prev", "playnow") and now - self._jump_at < JUMP_GUARD_SEC:
                 return "someone just changed the song"
             if len(self._ctl_last) > 1000:
                 self._ctl_last = {k: t for k, t in self._ctl_last.items() if now - t < 60}
             self._ctl_last[client_id] = now
-            if action in ("next", "prev"):
+            if action in ("next", "prev", "playnow"):
                 self._jump_at = now
             return None
+
+    def may_search(self, client_id: str, now: float | None = None) -> bool:
+        """YouTube searches go out to the internet: one a second per listener is plenty for typing."""
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            if now - self._searched.get(client_id, float("-inf")) < SEARCH_MIN_GAP_SEC:
+                return False
+            if len(self._searched) > 1000:
+                self._searched = {k: t for k, t in self._searched.items() if now - t < 60}
+            self._searched[client_id] = now
+            return True
 
     def announce(self, action: str) -> int:
         """Tell everyone (anonymously) that a control was used. Returns the notice's seq."""

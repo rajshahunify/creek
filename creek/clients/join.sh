@@ -3,13 +3,15 @@
 #   curl -s http://__CREEK_HOST__/join | sh              listen
 #   curl -s http://__CREEK_HOST__/join | sh -s install   keep a `creek` command
 H="__CREEK_HOST__"
+K="__CREEK_KEY__"                # the station's key, when it has one
+Q=""; [ -n "$K" ] && Q="?key=$K"
 
 if [ "$1" = "install" ]; then
   mkdir -p "$HOME/.local/bin"
   cat > "$HOME/.local/bin/creek" <<EOF
 #!/bin/sh
 # creek: join the music stream at $H (re-run the install line if the station moves)
-script=\$(curl -fsS "http://$H/join") || { echo "creek: can't reach the stream at $H"; exit 1; }
+script=\$(curl -fsS "http://$H/join$Q") || { echo "creek: can't reach the stream at $H"; exit 1; }
 exec sh -c "\$script" creek "\$@"
 EOF
   chmod +x "$HOME/.local/bin/creek"
@@ -22,7 +24,7 @@ EOF
 fi
 
 if command -v python3 >/dev/null 2>&1; then
-  code=$(curl -fsS "http://$H/client.py") || { echo "creek: can't reach the stream at $H"; exit 1; }
+  code=$(curl -fsS "http://$H/client.py$Q") || { echo "creek: can't reach the stream at $H"; exit 1; }
   if (: </dev/tty) 2>/dev/null; then
     exec python3 -c "$code" "$@" </dev/tty
   fi
@@ -32,11 +34,11 @@ fi
 # no python3: plain listening (Ctrl+C leaves)
 if [ -n "$1" ]; then echo "creek: '$1' needs python3; plain listening works without it"; exit 1; fi
 echo "~ joined the stream at $H (Ctrl+C to leave)"
-if command -v ffplay >/dev/null 2>&1; then exec ffplay -nodisp -autoexit -loglevel quiet -probesize 4096 -analyzeduration 0 -fflags nobuffer "http://$H/stream.mp3"
-elif command -v mpv >/dev/null 2>&1; then exec mpv --no-video --really-quiet "http://$H/stream.mp3"
-elif command -v mpg123 >/dev/null 2>&1; then exec mpg123 -q "http://$H/stream.mp3"
-elif command -v pw-play >/dev/null 2>&1; then curl -sN "http://$H/stream.pcm" | pw-play --format s16 --rate 44100 --channels 2 -
-elif command -v paplay >/dev/null 2>&1; then curl -sN "http://$H/stream.pcm" | paplay --raw --format=s16le --rate=44100 --channels=2
-elif command -v aplay >/dev/null 2>&1; then curl -sN "http://$H/stream.pcm" | aplay -q -t raw -f cd
+if command -v ffplay >/dev/null 2>&1; then exec ffplay -nodisp -autoexit -loglevel quiet -probesize 4096 -analyzeduration 0 -fflags nobuffer "http://$H/stream.mp3$Q"
+elif command -v mpv >/dev/null 2>&1; then exec mpv --no-video --really-quiet "http://$H/stream.mp3$Q"
+elif command -v mpg123 >/dev/null 2>&1; then exec mpg123 -q "http://$H/stream.mp3$Q"
+elif command -v pw-play >/dev/null 2>&1; then curl -sN "http://$H/stream.pcm$Q" | pw-play --format s16 --rate 44100 --channels 2 -
+elif command -v paplay >/dev/null 2>&1; then curl -sN "http://$H/stream.pcm$Q" | paplay --raw --format=s16le --rate=44100 --channels=2
+elif command -v aplay >/dev/null 2>&1; then curl -sN "http://$H/stream.pcm$Q" | aplay -q -t raw -f cd
 else echo "creek: no audio player found - install ffmpeg (for ffplay) or mpv"; exit 1
 fi

@@ -1,6 +1,7 @@
 """Paths and tunables. Everything can be overridden with CREEK_* environment variables."""
 
 import os
+import re
 from pathlib import Path
 
 ROOT = Path(os.environ.get("CREEK_HOME", Path(__file__).resolve().parent.parent))
@@ -9,10 +10,15 @@ LINKS = ROOT / "links.txt"
 DATA = ROOT / "data"
 DB = DATA / "creek.db"
 TMP = DATA / "tmp"
+WEB_DIST = Path(os.environ.get("CREEK_WEB", Path(__file__).resolve().parent.parent / "web" / "dist"))
 
 PORT = int(os.environ.get("CREEK_PORT", "7889"))
 ACCEPT_CONTRIBUTIONS = os.environ.get("CREEK_ACCEPT", "1") != "0"
 OPEN_CONTROLS = os.environ.get("CREEK_OPEN_CONTROLS", "1") != "0"   # 0: only the station laptop can pause/skip
+YT_COOKIES = os.environ.get("CREEK_YT_COOKIES") or None   # a cookies.txt for YouTube (cloud IPs often need one)
+KEY = os.environ.get("CREEK_KEY", "")   # set it when the station is on the open internet: listeners need it to get in
+if KEY and not re.fullmatch(r"[A-Za-z0-9_-]{8,}", KEY):
+    raise SystemExit("creek: CREEK_KEY should be at least 8 letters, digits, - or _ (it goes into links)")
 
 # audio format shared by the whole pipeline: signed 16-bit little-endian stereo
 RATE = 44100
@@ -49,8 +55,11 @@ PLAYLIST_CAP = 50
 LINKS_REFRESH_SEC = 12 * 3600
 
 # reactions: index -> glyph; clients map indices to their own glyphs
-REACTIONS = ["🌊", "💛", "✨", "🔥", "😌", "🎶"]
+# REACTIONS = ["🌊", "💛", "✨", "🔥", "😌", "🎶"]
+REACTIONS = []
 REACT_MIN_GAP_SEC = 1.5
 CONTROL_MIN_GAP_SEC = 1.0  # per listener, between pause/next/prev presses
 SEEK_MIN_GAP_SEC = 0.25    # arrow keys can be tapped a few times in a row
 JUMP_GUARD_SEC = 2.0       # two people pressing next at once skip one song, not two
+SEARCH_MIN_GAP_SEC = 1.0   # per listener, between YouTube searches
+SEARCH_CACHE_SEC = 600     # the same words searched again within this come straight from memory

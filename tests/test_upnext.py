@@ -86,3 +86,33 @@ def test_play_next_goes_to_the_front():
     assert q.titles() == ["c", "a", "b"]
     assert q.add(2, "ben", "b", front=True) == 1          # already waiting: moves up rather than twice
     assert q.titles(5) == ["b", "c", "a"]
+
+
+def test_a_song_can_go_in_at_any_place():
+    q = UpNext()
+    for tid, who in ((1, "a"), (2, "b"), (3, "c")):
+        q.add(tid, who, str(tid))
+    assert q.add(4, "d", "4", at=2) == 2
+    assert q.titles(9) == ["1", "4", "2", "3"]
+    assert q.add(5, "e", "5", at=99) == 5                   # past the end: the end
+    assert q.add(6, "f", "6", at=0) == 1                    # before the start: the front
+    assert q.add(3, "c", "3", at=2) == 2                    # already queued: moves there
+    assert q.titles(9) == ["6", "3", "1", "4", "2", "5"]
+
+
+def test_anyone_can_move_and_remove_and_each_change_bumps_the_version():
+    q = UpNext()
+    q.add(1, "a", "x")
+    q.add(2, "b", "y")
+    q.add(3, "c", "z")
+    v = q.version
+    assert q.move(3, 1) == 1 and q.titles() == ["z", "x", "y"]
+    assert q.move(3, 10) == 3 and q.titles() == ["x", "y", "z"]
+    assert q.move(99, 1) is None
+    assert q.remove(2) and not q.remove(2)
+    assert q.titles() == ["x", "z"]
+    assert q.version == v + 3                                # two moves and a remove; the misses don't count
+    q.pop()
+    q.clear()
+    assert q.version == v + 5
+    assert [r.tid for r in q.snapshot()] == []

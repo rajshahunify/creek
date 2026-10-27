@@ -12,8 +12,8 @@ from pathlib import Path
 
 from . import media
 from .config import (CONTRIB_MAX_SEC, CONTRIB_MIN_SEC, DATA, FOLDER_MAX_SEC, LINKS, LINKS_REFRESH_SEC, MUSIC,
-                     PLAYLIST_CAP, TMP)
-from .library import Library, clean_meta
+                     PLAYLIST_CAP, SEARCH_CACHE_SEC, TMP, YT_COOKIES)
+from .library import Library, clean_meta, norm
 
 LINKS_HEADER = """\
 # creek links: one YouTube (or SoundCloud, Bandcamp, ...) song or playlist URL per line.
@@ -100,6 +100,15 @@ class Ingest:
         self._links_mtime = 0.0
         self.js_runtimes = {name: {"path": path} for name in ("deno", "node", "bun")
                             if (path := shutil.which(name))}
+        self._found: dict[str, tuple[float, list[dict]]] = {}   # recent YouTube searches: words -> (when, hits)
+        self._found_lock = threading.Lock()
+
+    def _yt_opts(self, **opts) -> dict:
+        if self.js_runtimes:
+            opts["js_runtimes"] = self.js_runtimes
+        if YT_COOKIES:
+            opts["cookiefile"] = YT_COOKIES
+        return opts
 
     def start(self):
         (MUSIC / ".yt").mkdir(parents=True, exist_ok=True)
@@ -116,6 +125,41 @@ class Ingest:
         for k in [k for k, v in self.tickets.items() if v.created < cutoff]:
             del self.tickets[k]
         return t
+
+    # --- searching YouTube ---------------------------------------------------------------------
+
+    def search_youtube(self, words: str, n: int = 8) -> list[dict]:
+        """Top YouTube matches for some words: {vid, title, channel, duration, url, thumb, live}. Nothing is
+        downloaded; posting one of them goes through add_link like any other link."""
+        key = norm(words)
+        if not key:
+            return []
+        now = time.time()
+        with self._found_lock:
+            if (hit := self._found.get(key)) and now - hit[0] < SEARCH_CACHE_SEC:
+                return hit[1]
+        import yt_dlp
+
+        log = _Log()
+        with yt_dlp.YoutubeDL(self._yt_opts(extract_flat=True, skip_download=True, quiet=True, no_warnings=True,
+                                            logger=log)) as ydl:
+            info = ydl.extract_info(f"ytsearch{n}:{words}", download=False) or {}
+        hits = []
+        for e in info.get("entries") or []:
+            if not e or not (vid := e.get("id")) or len(vid) != 11:
+                continue                  # a channel or playlist among the results, not a song
+            hits.append({"vid": vid, "title": e.get("title") or "", "channel": e.get("channel") or e.get("uploader") or "",
+                         "duration": e.get("duration"), "url": f"https://www.youtube.com/watch?v={vid}",
+                         "thumb": f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg",
+                         "live": e.get("live_status") in ("is_live", "is_upcoming")})
+        if not hits and log.errors:
+            raise RuntimeError(log.errors[-1][:200])
+        with self._found_lock:
+            self._found[key] = (now, hits)
+            if len(self._found) > 200:
+                for k in sorted(self._found, key=lambda k: self._found[k][0])[:50]:
+                    del self._found[k]
+        return hits
 
     # --- links ---------------------------------------------------------------------------------
 
@@ -200,9 +244,7 @@ class Ingest:
         }
         if single:
             opts.update(noplaylist=True, playlistend=1)
-        if self.js_runtimes:
-            opts["js_runtimes"] = self.js_runtimes
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with yt_dlp.YoutubeDL(self._yt_opts(**opts)) as ydl:
             ydl.download([url])
         if handed:
             t.status = "done"

@@ -1,0 +1,9 @@
+.git
+.venv
+music
+data
+links.txt
+web/node_modules
+web/dist
+**/__pycache__
+.pytest_cache

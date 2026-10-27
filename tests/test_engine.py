@@ -110,3 +110,18 @@ def test_a_new_shuffle_cycle_doesnt_start_with_the_song_just_played(tmp_path, to
                 e._open_next().close()
         e._open_next().close()               # now the pick, the last of the cycle
         assert e.shuffle_pick().id != pick.id
+
+
+def test_seek_to_jumps_to_a_place_in_the_song(tmp_path, tone):
+    e = Engine(library=None, room=None, on_mp3=print, on_pcm=print, upnext=UpNext())
+    assert not e.seek_to(10)                  # nothing playing yet
+    e.playing = p = playing(tone(tmp_path / "a.flac", 40, 440, noise=True))
+    try:
+        p.fill(sec(10))
+        p.take(sec(10))
+        assert e.seek_to(25) and abs(e.position - 25) < 0.01
+        assert e.seek_to(3) and abs(e.position - 3) < 0.01      # asked again before the jump: the latest wins
+        assert e.seek_to(500) and abs(e.position - 39) < 0.01   # not past the end
+        assert e.seek_to(-5) and e.position == 0
+    finally:
+        p.close()

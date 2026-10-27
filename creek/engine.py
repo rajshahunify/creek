@@ -43,6 +43,7 @@ class Playing:
         self.eof = False
         self.trimmed = False
         self.pos = 0                   # bytes of the track played out so far
+        self.via = "shuffle"           # how it came to play: shuffle | queue | request
         self.played = bytearray()      # the last minute of them, for jumping back
 
     def fill(self, want: int):
@@ -136,6 +137,16 @@ class Engine:
         """Jump within the current song (negative: back). Presses that come quickly add up."""
         with self._ctl:
             self._seek += sec
+
+    def seek_to(self, sec: float) -> bool:
+        """Jump to `sec` seconds into the current song (the progress bar). False if nothing is playing."""
+        with self._ctl:
+            p = self.playing
+            if not p or not p.track:
+                return False
+            end = max(0.0, (p.track.duration or sec + 1) - 1)
+            self._seek = max(0.0, min(sec, end)) - p.pos / BYTES_PER_SEC
+            return True
 
     @property
     def position(self) -> float:
@@ -236,10 +247,12 @@ class Engine:
             want, self._want = self._want, None
         if want is not None and (p := self._open(self.library.get(want))):
             self._played_out_of_turn(p.track.id)
+            p.via = "request"
             return p
         while (req := self.upnext.pop()) is not None:
             if p := self._open(self.library.get(req.tid)):
                 self._played_out_of_turn(p.track.id)
+                p.via = "queue"
                 return p
         for _ in range(5):
             if (track := self._take_shuffle()) is None:

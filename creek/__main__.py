@@ -24,6 +24,10 @@ USAGE = """usage: python -m creek [command]
   fwd [seconds]        jump ahead in this song (default 5 s)
   back [seconds]       jump back in this song (default 5 s)
   clear                empty the up-next queue (the songs stay on the station)
+  seek <m:ss>          jump to that time in this song
+  move <n> <place>     move the n-th song in the up-next queue to another place (1 = up next)
+  drop <n>             take the n-th song out of the up-next queue (it stays in the shuffle)
+  news                 what's new for listeners (the same list the web player and terminals show)
   list                 every song in rotation, with ids
   remove <id|current>  take a song out of rotation for good
   status               library counts and recent downloads
@@ -43,6 +47,17 @@ def call(method: str, path: str):
         sys.exit("creek: the station isn't running (start it with: uv run python -m creek)")
 
 
+def seconds(text: str) -> int | None:
+    """'1:30' or '90' -> 90."""
+    parts = text.split(":")
+    if not 1 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+        return None
+    total = 0
+    for p in parts:
+        total = total * 60 + int(p)
+    return total
+
+
 def serve():
     import uvicorn
 
@@ -53,6 +68,7 @@ def serve():
   creek is flowing on port {PORT}
 
   share this:   curl http://{ip}:{PORT}            (or http://{name}.local:{PORT})
+  web player:   http://{ip}:{PORT}                 (open it in a browser)
   music folder: {MUSIC}
   links file:   {LINKS}
   controls:     uv run python -m creek play [id|link] | pause | next [id|link] | prev | fwd | back | clear
@@ -111,6 +127,20 @@ def main(argv: list[str]):
             time.sleep(1)
             print(".", end="", flush=True)
         print(f"\r{t['msg']}" + " " * 20)
+    elif cmd == "seek" and len(args) == 1 and (to := seconds(args[0])) is not None:
+        r = call("POST", f"/op/seek?to={to}")
+        print(f"⏩ {r['pos'] // 60}:{r['pos'] % 60:02d} / {r['dur'] // 60}:{r['dur'] % 60:02d}")
+    elif cmd == "move" and len(args) == 2 and all(a.isdigit() for a in args):
+        print(f"moved: now number {call('POST', f'/queue/move?place={args[0]}&to={args[1]}&id=station')['place']}")
+    elif cmd == "drop" and len(args) == 1 and args[0].isdigit():
+        call("POST", f"/queue/remove?place={args[0]}&id=station")
+        print("taken out of the queue (it stays in the shuffle)")
+    elif cmd == "news":
+        from .news import NEWS
+        for x in NEWS:
+            print(f"{x.date}  {x.title}")
+            for line in x.lines:
+                print(f"    · {line}")
     elif cmd == "list":
         for t in call("GET", "/op/list"):
             mins, secs = divmod(int(t["duration"] or 0), 60)
