@@ -16,13 +16,13 @@ import { KeyPrompt, Welcome, WhatsNew } from "../components/Dialogs";
 import { Bell, ChevronLeft, ChevronRight, Close, Down, Download, Grip, ListPlus, More, PlayNext, Refresh, Search, Trash, Up, YouTube, Zap } from "../components/Icons";
 import { Menu } from "../components/Menu";
 import { Confirm } from "../components/Modal";
-import { useNow, useStored } from "../hooks";
+import { useStored } from "../hooks";
 import { player } from "../player";
 import { go } from "../router";
 import { Result, useSongSearch } from "../songSearch";
 import { toCsv } from "../dashboard/table";
 import { connect, control, move, needsKey, post, remove, seekBy, Snapshot, toast, useStore } from "../store";
-import { keyAction, mmss, positionAt } from "../util";
+import { keyAction, mmss } from "../util";
 
 /** The sheet the music took over (see MUSIC_SHEET in router.ts). */
 export const MUSIC_TITLE = "TAL Master";
@@ -35,7 +35,7 @@ export function musicRows({ state, order, pending }: Pick<Snapshot, "state" | "o
   const queue = order ? order.flatMap((t) => byTid.get(t) ?? []) : state.queue;
   const shuffle = state.shuffle_next && !byTid.has(state.shuffle_next.tid) ? state.shuffle_next : null;
   return [
-    ...(state.now ? [["▶", state.now.title || state.now.song, state.now.artist, mmss(state.dur), state.paused ? "Paused" : "Playing",
+    ...(state.now ? [["▶", state.now.title || state.now.song, state.now.artist, mmss(state.dur), state.paused ? "Paused" : "Running",
       state.now.via === "shuffle" ? "Shuffle" : "A listener"]] : []),
     ...pending.map((p) => ["", p.label, "", "", "Fetching", "You"]),
     ...queue.map((q, i) => [String(i + 1), q.title || q.song, q.artist, mmss(q.duration), i ? "Queued" : "Up next", q.mine ? "You" : "A listener"]),
@@ -193,8 +193,7 @@ export function MusicSheet({ blocked }: { blocked: boolean }) {
 const COLS = ["", ...COLUMNS, ""];
 
 function QueueTable({ onSearch }: { onSearch: () => void }) {
-  const { state, order, pending, at } = useStore();
-  const tick = useNow(1000);
+  const { state, order, pending } = useStore();
   const byTid = new Map((state?.queue ?? []).map((q) => [q.tid, q]));
   const queue: QueueItem[] = order ? order.flatMap((t) => byTid.get(t) ?? []) : state?.queue ?? [];
   const editable = !!state?.controls_open;
@@ -225,8 +224,8 @@ function QueueTable({ onSearch }: { onSearch: () => void }) {
                   <td className="place">▶</td>
                   <td className="song-title" title={now.title || now.song}>{now.title || now.song}</td>
                   <td>{now.artist}</td>
-                  <td className="num">{mmss(positionAt(state!.pos, state!.dur, state!.paused, at, tick))} / {mmss(state!.dur)}</td>
-                  <td><span className={`pill ${state!.paused ? "warn" : "good"}`}>{state!.paused ? "Paused" : "Playing"}</span></td>
+                  <td className="num">{mmss(state!.dur)}</td>
+                  <td><span className={`pill ${state!.paused ? "warn" : ""}`}>{state!.paused ? "Paused" : "Running"}</span></td>
                   <td className="muted">{now.via === "shuffle" ? "Shuffle" : now.via === "request" || now.via === "queue" ? "A listener" : "—"}</td>
                   <td className="act">{editable && <Menu label={`More for ${now.song}`} items={[{ icon: <PlayNext />, text: "Skip to the next song", run: () => control("next") }]} />}</td>
                 </tr>

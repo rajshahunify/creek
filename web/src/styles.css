@@ -372,8 +372,8 @@ svg { flex: none; }
 .table.music .song-title { font-weight: 560; width: 45%; max-width: 0; min-width: 180px; }   /* takes what's left, then ellipsis */
 .table.music td.act { width: 1%; padding: 0 8px; text-align: right; overflow: visible; }
 .table.music tr { outline-offset: -2px; }
-.table.music tr.now td { background: var(--accent-soft); }
-.table.music tr.now .place { color: var(--accent); }
+.table.music tr.now td { background: color-mix(in srgb, var(--accent) 4%, transparent); }   /* a hint, not a highlight */
+.table.music tr.now .place { color: var(--text-subtle); }
 .table.music tr.earlier td { color: var(--text-subtle); }
 .table.music tr.fetching .song-title { color: var(--muted); }
 .table.music tr.dragging { position: relative; z-index: 2; box-shadow: var(--menu-shadow); }
