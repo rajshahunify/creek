@@ -1,4 +1,5 @@
-"""Songs listeners posted: they play after the current one, in the order posted, one per person at a time."""
+"""Songs listeners posted: they play after the current one, in the order posted (or first in line, with
+"play next"), one per person at a time."""
 
 import threading
 from collections import deque
@@ -34,15 +35,22 @@ class UpNext:
         with self.lock:
             self.pending.pop(poster, None)
 
-    def add(self, tid: int, poster: str, title: str) -> int:
-        """Queue a song and return its place (1 = up next). A song that's already queued keeps its place.
+    def add(self, tid: int, poster: str, title: str, front: bool = False) -> int:
+        """Queue a song and return its place (1 = up next). front=True puts it first in line ("play next").
+        A song that's already queued keeps its place, unless it's asked to play next.
         Returns 0 if the queue was cleared while this song was downloading: it isn't queued then."""
         with self.lock:
             if self.pending.pop(poster, self.generation) != self.generation:
                 return 0
             for place, r in enumerate(self.items, 1):
                 if r.tid == tid:
-                    return place
+                    if not front:
+                        return place
+                    self.items.remove(r)
+                    break
+            if front:
+                self.items.appendleft(Request(tid, poster, title))
+                return 1
             self.items.append(Request(tid, poster, title))
             return len(self.items)
 

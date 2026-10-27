@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import audio
 from .config import (ACCEPT_CONTRIBUTIONS, BYTES_PER_SEC, CONTRIB_MAX_BYTES, DATA, DB, JOIN_BURST_SEC, MUSIC,
-                     OPEN_CONTROLS, PORT, SCAN_EVERY_SEC, TMP)
+                     OPEN_CONTROLS, PORT, SCAN_EVERY_SEC, SEEK_SEC, TMP)
 from .engine import Engine
 from .ingest import Ingest, youtube_id
 from .library import Library
@@ -226,10 +226,20 @@ async def stream_pcm(request: Request):
     return _stream(station(request).pcm, "application/octet-stream")
 
 
+def _coming_up(st: Station) -> dict:
+    """The song after this one: the first posted song, or else the shuffle's pick."""
+    if first := st.upnext.titles(1):
+        return {"next": first[0], "next_from": "queue"}
+    t = st.engine.shuffle_pick()
+    return {"next": _label(t.title, t.artist) if t else "", "next_from": "shuffle"}
+
+
 @app.get("/now", response_class=AsciiJSON)
 def now(request: Request, since: int = -1):
     st = station(request)
-    return AsciiJSON({**st.room.snapshot(since, st.here), "upnext": st.upnext.titles(3), "queued": len(st.upnext)})
+    cur = st.engine.current
+    return AsciiJSON({**st.room.snapshot(since, st.here), "upnext": st.upnext.titles(3), "queued": len(st.upnext),
+                      **_coming_up(st), "pos": round(st.engine.position), "dur": round(cur.duration or 0) if cur else 0})
 
 
 @app.post("/react", response_class=AsciiJSON)
@@ -258,9 +268,9 @@ def _label(title: str, artist: str) -> str:
 
 
 @app.post("/post", response_class=AsciiJSON)
-def post(request: Request, url: str | None = None, track: int | None = None, id: str = "anon"):
+def post(request: Request, url: str | None = None, track: int | None = None, id: str = "anon", next: bool = False):
     """A listener posts one song (a link, or a song already on the station from /search): it queues up to
-    play after the current song."""
+    play after the current song, behind the songs already waiting (or ahead of them, with next=1)."""
     st, poster = station(request), id[:64]
     if track is None:
         _accepting()
@@ -279,7 +289,7 @@ def post(request: Request, url: str | None = None, track: int | None = None, id:
             return "couldn't queue that one"
         if cur and cur.id == tid:
             return "that one's playing right now"
-        place = st.upnext.add(tid, poster, _label(t.title, t.artist))
+        place = st.upnext.add(tid, poster, _label(t.title, t.artist), front=next)
         if place == 0:
             return "the queue was cleared while it downloaded - it joined the shuffle instead"
         return "up next" if place == 1 else f"queued - plays after {place - 1} other{'s' if place > 2 else ''}"
@@ -309,6 +319,7 @@ def queue_view(request: Request):
         "now": _label(cur.title, cur.artist) if cur else "quiet water",
         "paused": st.engine.paused,
         "upnext": st.upnext.titles(20),
+        "shuffle_next": _label(pick.title, pick.artist) if (pick := st.engine.shuffle_pick()) else "",
         "earlier": [_label(t.title, t.artist) for t in earlier],
         "songs": lib.counts().get("ready", 0),
         "here": st.here,
@@ -361,6 +372,7 @@ def op_status(request: Request):
         "here": st.here,
         "tracks": st.library.counts(),
         "upnext": st.upnext.titles(20),
+        "shuffle_next": _label(pick.title, pick.artist) if (pick := st.engine.shuffle_pick()) else "",
         "jobs": [vars(t) for t in list(st.ingest.tickets.values())[-10:]],
     })
 
@@ -371,15 +383,24 @@ def op_list(request: Request):
     return AsciiJSON(station(request).library.list())
 
 
-CONTROLS = ("pause", "resume", "toggle", "next", "prev", "clear")
+CONTROLS = ("pause", "resume", "toggle", "next", "prev", "clear", "fwd", "back")
 
 
-def _apply(st: Station, action: str) -> dict:
+def _apply(st: Station, action: str, by: float = SEEK_SEC) -> dict:
     engine = st.engine
     if action == "toggle":
         action = "resume" if engine.paused else "pause"
     if action == "prev" and not engine.prev():
         raise HTTPException(409, "nothing has played yet")
+    if action in ("fwd", "back"):
+        if engine.paused:
+            raise HTTPException(409, "the stream is paused - press play first")
+        if not engine.current:
+            raise HTTPException(409, "no song is playing")
+        by = max(1.0, min(abs(by), 600.0))
+        engine.seek(by if action == "fwd" else -by)
+        return {"action": action, "notice": st.room.announce(action), "paused": False,
+                "pos": round(engine.position), "dur": round(engine.current.duration or 0)}
     if action == "clear":
         if not (cleared := st.upnext.clear()):
             raise HTTPException(409, "the queue is already empty")
@@ -395,8 +416,9 @@ def _apply(st: Station, action: str) -> dict:
 
 
 @app.post("/ctl/{action}", response_class=AsciiJSON)
-def ctl(request: Request, action: str, id: str = "anon"):
-    """pause / resume / toggle / next / prev / clear, for every listener (unless CREEK_OPEN_CONTROLS=0)."""
+def ctl(request: Request, action: str, id: str = "anon", by: float = SEEK_SEC):
+    """pause / resume / toggle / next / prev / clear / fwd / back (by seconds), for every listener (unless
+    CREEK_OPEN_CONTROLS=0)."""
     if action not in CONTROLS:
         raise HTTPException(404, "unknown control")
     st = station(request)
@@ -404,7 +426,7 @@ def ctl(request: Request, action: str, id: str = "anon"):
         _local(request)
     elif why := st.room.control(id[:64], action):
         raise HTTPException(429, why)
-    return AsciiJSON(_apply(st, action))
+    return AsciiJSON(_apply(st, action, by))
 
 
 @app.post("/op/play", response_class=AsciiJSON)
@@ -431,6 +453,31 @@ def op_play(request: Request, id: int | None = None, url: str | None = None):
     return AsciiJSON({"paused": False})
 
 
+@app.post("/op/playnext", response_class=AsciiJSON)
+def op_play_next(request: Request, id: int | None = None, url: str | None = None):
+    """Put a song first in the up-next queue: id from `list`, or a link (added if it's new)."""
+    _local(request)
+    st = station(request)
+
+    def queue(tid: int) -> str:
+        t, cur = st.library.get(tid), st.engine.current
+        if t is None:
+            return "couldn't queue that one"
+        if cur and cur.id == tid:
+            return "that one's playing right now"
+        st.upnext.add(tid, "station", _label(t.title, t.artist), front=True)
+        return f"plays next: {_label(t.title, t.artist)}"
+
+    if url:
+        if not re.match(r"https?://\S+$", url):
+            raise HTTPException(400, "that doesn't look like a link")
+        t = st.ingest.add_link(url, contributed=False, on_ready=queue, single=True)
+        return AsciiJSON({"ticket": t.id, "status": t.status})
+    if id is None or st.library.get(id) is None:
+        raise HTTPException(404, "no such song in rotation (see `list`)")
+    return AsciiJSON({"msg": queue(id)})
+
+
 @app.post("/op/remove", response_class=AsciiJSON)
 def op_remove(request: Request, id: str):
     _local(request)
@@ -448,10 +495,10 @@ def op_remove(request: Request, id: str):
 
 # last, so /op/play, /op/remove, ... above are matched first
 @app.post("/op/{action}", response_class=AsciiJSON)
-def op_control(request: Request, action: str):
+def op_control(request: Request, action: str, by: float = SEEK_SEC):
     if action == "skip":
         action = "next"
     if action not in CONTROLS:
         raise HTTPException(404, "unknown command")
     _local(request)
-    return AsciiJSON(_apply(station(request), action))
+    return AsciiJSON(_apply(station(request), action, by))

@@ -76,3 +76,13 @@ def test_ben_can_post_again_after_his_cleared_download_lands():
     q.clear()
     q.add(2, "ben", "late")
     assert q.reserve("ben") is None
+
+
+def test_play_next_goes_to_the_front():
+    q = UpNext()
+    q.add(1, "ana", "a")
+    q.add(2, "ben", "b")
+    assert q.add(3, "cara", "c", front=True) == 1
+    assert q.titles() == ["c", "a", "b"]
+    assert q.add(2, "ben", "b", front=True) == 1          # already waiting: moves up rather than twice
+    assert q.titles(5) == ["b", "c", "a"]

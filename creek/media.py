@@ -89,8 +89,11 @@ class Source:
         self.proc.wait()
 
 
-def track_source(path: str, gain_db: float) -> Source:
-    # leading silence is dropped so the crossfade lands on actual music
+def track_source(path: str, gain_db: float, start: float = 0.0) -> Source:
+    # leading silence is dropped so the crossfade lands on actual music (but not when starting mid-song)
+    if start > 0:
+        return Source(["-ss", f"{start:.3f}", "-i", path, "-map", "0:a:0", "-vn", "-sn", "-dn",
+                       "-af", f"volume={gain_db}dB"])
     return Source(["-i", path, "-map", "0:a:0", "-vn", "-sn", "-dn",
                    "-af", f"silenceremove=start_periods=1:start_threshold=-50dB,volume={gain_db}dB"])
 

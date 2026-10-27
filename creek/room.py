@@ -4,7 +4,7 @@ import threading
 import time
 from collections import deque
 
-from .config import CONTROL_MIN_GAP_SEC, JUMP_GUARD_SEC, REACT_MIN_GAP_SEC, REACTIONS
+from .config import CONTROL_MIN_GAP_SEC, JUMP_GUARD_SEC, REACT_MIN_GAP_SEC, REACTIONS, SEEK_MIN_GAP_SEC
 
 
 class Room:
@@ -14,7 +14,7 @@ class Room:
         self.events: deque[tuple[int, int]] = deque(maxlen=200)   # (seq, reaction index)
         self.title, self.artist, self.quiet = "", "", True
         self.paused = False
-        self.notice_seq, self.notice = 0, ""                       # last control anyone used: pause|resume|next|prev
+        self.notice_seq, self.notice = 0, ""                       # last control anyone used: pause|next|fwd|...
         self._ctl_last: dict[str, float] = {}
         self._jump_at = float("-inf")
         self._last: dict[str, float] = {}                          # client id -> last reaction time
@@ -32,7 +32,8 @@ class Room:
         """May this listener use a control right now? Returns why not, or None."""
         now = time.monotonic() if now is None else now
         with self.lock:
-            if now - self._ctl_last.get(client_id, float("-inf")) < CONTROL_MIN_GAP_SEC:
+            gap = SEEK_MIN_GAP_SEC if action in ("fwd", "back") else CONTROL_MIN_GAP_SEC
+            if now - self._ctl_last.get(client_id, float("-inf")) < gap:
                 return "easy - one press at a time"
             if action in ("next", "prev") and now - self._jump_at < JUMP_GUARD_SEC:
                 return "someone just changed the song"

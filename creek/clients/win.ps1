@@ -10,21 +10,24 @@ creek                      join the stream (press ? while listening for the keys
 creek --quiet              audio only: no status line, no keys
 creek --volume N           start at volume N, 0-100 (default 60)
 creek pause | play | next | prev | clear    control the stream for everyone
+creek fwd | back [seconds]                 jump ahead / back in this song (5 s), for everyone
 creek queue                what's on, what's up next, what played before
 creek find <words>         look for a song on the station
-creek post <link | number from find>   queue a song to play soon
+creek post <link | number from find>   queue a song (it plays after the songs already waiting)
+creek next <link | number from find>   play a song next, ahead of the queue
 creek add <link|file|folder> ...   add music to the shuffle
 "@
 
 $CreekHelp = @(
-    '  keys   a  post a song link (plays soon)      /  find a song on the station to queue',
-    '         space  pause / play    n  next    p  previous    l  what''s on & up next    c  clear the queue',
-    '         1-6  drop an emoji     +/-  volume    ?  this help    q  leave'
+    '  keys   a  play a song next (a link, or words to find one)    e  add one to the end of the queue    / find',
+    '         space  pause / play    n  next    p  previous    left/right  jump 5 s    l  what''s on & up next',
+    '         c  clear the queue     1-6  drop an emoji     +/-  volume    ?  this help    q  leave'
 )
 $CreekDone = @{ pause = 'paused for everyone'; resume = 'playing'; next = 'next song'; prev = 'previous song' }
 $CreekSeen = @{ pause = 'someone paused the stream'; resume = 'someone pressed play'
                 next = 'someone skipped ahead'; prev = 'someone went back a song'
-                clear = 'someone cleared the up-next queue' }
+                clear = 'someone cleared the up-next queue'
+                fwd = '>> someone jumped ahead 5 s'; back = '<< someone jumped back 5 s' }
 
 function Format-CreekCleared($n) {
     $s = 's'
@@ -85,8 +88,19 @@ function Format-CreekQueue($q) {
         if ($i -eq 0) { $hint = '      (c clears the queue)' }
         $lines += ('  {0,-8} {1}. {2}{3}' -f $label, ($i + 1), $next[$i], $hint)
     }
-    if ($next.Count -eq 0) { $lines += '  up next  nothing posted yet, so the shuffle picks' }
-    $lines += "  then     the shuffle, $($q.songs) songs"
+    $pick = $q.shuffle_next
+    $rest = "the shuffle, $($q.songs) songs"
+    if ($next.Count -eq 0) {
+        if ($pick) {
+            $lines += "  up next  $pick   (the shuffle's pick)"
+            $lines += "  then     the rest of $rest"
+        } else {
+            $lines += '  up next  nothing posted yet, so the shuffle picks'
+            $lines += "  then     $rest"
+        }
+    }
+    elseif ($pick) { $lines += "  then     $pick   (the shuffle's pick), then the rest of $rest" }
+    else { $lines += "  then     $rest" }
     if (@($q.earlier).Count -gt 0) { $lines += '  earlier  ' + ((@($q.earlier) | Select-Object -First 3) -join '  .  ') }
     return $lines
 }
@@ -102,6 +116,14 @@ function Invoke-CreekCommand($base, $argv) {
             $r = Invoke-RestMethod -Method Post -Uri "$base/ctl/${action}?id=$id" -UseBasicParsing -TimeoutSec 5
             if ($action -eq 'clear') { Write-Host (Format-CreekCleared $r.cleared) } else { Write-Host $CreekDone[$action] }
         }
+        elseif (@('fwd', 'back') -contains $cmd -and $rest.Count -le 1) {
+            $by = ''
+            if ($rest.Count -eq 1) { $by = "&by=$([int]$rest[0])" }
+            $r = Invoke-RestMethod -Method Post -Uri "$base/ctl/${cmd}?id=$id$by" -UseBasicParsing -TimeoutSec 5
+            $mark = '>>'
+            if ($cmd -eq 'back') { $mark = '<<' }
+            Write-Host "$mark $(Format-CreekTime $r.pos) / $(Format-CreekTime $r.dur)"
+        }
         elseif ($cmd -eq 'queue') { Format-CreekQueue (Invoke-RestMethod -Uri "$base/queue" -UseBasicParsing) | ForEach-Object { Write-Host $_ } }
         elseif ($cmd -eq 'find' -and $rest.Count -gt 0) {
             $hits = @(Invoke-RestMethod -Uri "$base/search?q=$([Uri]::EscapeDataString($rest -join ' '))" -UseBasicParsing) | ForEach-Object { $_ }
@@ -111,12 +133,14 @@ function Invoke-CreekCommand($base, $argv) {
                 Write-Host ("  {0}. {1}  ({2})   creek post #{3}" -f ($i + 1), $hits[$i].song, (Format-CreekTime $hits[$i].duration), $hits[$i].id)
             }
         }
-        elseif ($cmd -eq 'post' -and $rest.Count -eq 1) {
+        elseif (@('post', 'next') -contains $cmd -and $rest.Count -eq 1) {
             $what = ([string]$rest[0]).TrimStart('#')
+            $front = ''
+            if ($cmd -eq 'next') { $front = '&next=1' }
             if ($what -match '^\d+$') {
-                Write-Host (Invoke-RestMethod -Method Post -Uri "$base/post?track=$what&id=$id" -UseBasicParsing).msg
+                Write-Host (Invoke-RestMethod -Method Post -Uri "$base/post?track=$what&id=$id$front" -UseBasicParsing).msg
             } else {
-                $t = Invoke-RestMethod -Method Post -Uri "$base/post?url=$([Uri]::EscapeDataString($what))&id=$id" -UseBasicParsing
+                $t = Invoke-RestMethod -Method Post -Uri "$base/post?url=$([Uri]::EscapeDataString($what))&id=$id$front" -UseBasicParsing
                 Write-Host -NoNewline 'fetching'
                 do {
                     Start-Sleep -Milliseconds 1500
@@ -252,6 +276,28 @@ function Read-CreekLine($prompt) {
     return ([string]$line).Trim()
 }
 
+function Find-CreekSong($base, $id, $words, $front) {
+    # look the words up, list the hits, ask for a number; returns the message to show (or nothing)
+    $hits = @(Invoke-RestMethod -Uri "$base/search?q=$([Uri]::EscapeDataString($words))" -UseBasicParsing -TimeoutSec 5) | ForEach-Object { $_ }
+    $hits = @($hits)
+    if ($hits.Count -eq 0) { return "no songs on the station match '$words' (a takes a link instead)" }
+    $lines = @()
+    for ($i = 0; $i -lt $hits.Count; $i++) {
+        $lines += "  $($i + 1). $($hits[$i].song)  ($(Format-CreekTime $hits[$i].duration))"
+    }
+    Write-CreekLines $lines
+    $what = 'queue'
+    if ($front) { $what = 'play next' }
+    $pick = Read-CreekLine "number to $what (1-$($hits.Count), Enter on its own cancels)"
+    if ($pick -match '^\d+$' -and [int]$pick -ge 1 -and [int]$pick -le $hits.Count) {
+        $next = ''
+        if ($front) { $next = '&next=1' }
+        $r = Invoke-RestMethod -Method Post -UseBasicParsing -TimeoutSec 5 `
+            -Uri "$base/post?track=$($hits[[int]$pick - 1].id)&id=$id$next"
+        return "~ $($r.msg) ~"
+    }
+}
+
 # --- listening -------------------------------------------------------------------------------
 
 function Start-CreekListening($base, $volume, $quiet) {
@@ -259,14 +305,17 @@ function Start-CreekListening($base, $volume, $quiet) {
     if (-not $p) { return }
     try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop; $pump = $true } catch { $pump = $false }
 
-    $fancy = [bool]($env:WT_SESSION -or $env:TERM_PROGRAM)
+    # Windows Terminal, VS Code and ConEmu draw colour emoji. The classic console window can't (its fonts
+    # have none), so there the emoji become the nearest symbols those fonts do have: wave, heart, sparkle,
+    # flame, smile, notes. CREEK_EMOJI=1 or 0 overrides the guess.
+    $fancy = [bool]($env:WT_SESSION -or $env:TERM_PROGRAM -or $env:ConEmuANSI -eq 'ON')
+    if ($env:CREEK_EMOJI) { $fancy = $env:CREEK_EMOJI -ne '0' }
     if ($fancy) {
         $glyphs = @(0x1F30A, 0x1F49B, 0x2728, 0x1F525, 0x1F60C, 0x1F3B6) | ForEach-Object { [char]::ConvertFromUtf32($_) }
-        $note = [string][char]0x266A
     } else {
-        $glyphs = @('~o', '<3', '**', '^^', ':)', 'o/')
-        $note = '~'
+        $glyphs = @(0x2248, 0x2665, 0x263C, 0x25B2, 0x263A, 0x266B) | ForEach-Object { [string][char]$_ + ' ' }
     }
+    $note = [string][char]0x266A
     $water = '~~ ~~~ ~ ~~~~  ~~ ~ ~~~ ~~  ~ ~~~~ ~ '
     $riverWidth = 26
     $id = Get-CreekId
@@ -278,7 +327,7 @@ function Start-CreekListening($base, $volume, $quiet) {
     $quietSince = $null
     $backoff = 15
     $frame = 0
-    $flash = '~ a post a song . / find one . space pause . n next . ? all keys . q leave ~'
+    $flash = '~ a play a song next . e add one to the queue . space pause . ? all keys . q leave ~'
     $flashUntil = [DateTime]::Now.AddSeconds(6)
     $postTicket = $null
     $held = $false                # our player is paused because we pressed pause
@@ -293,7 +342,7 @@ function Start-CreekListening($base, $volume, $quiet) {
         if (-not $quiet) {
             [Console]::TreatControlCAsInput = $true
             try { [Console]::CursorVisible = $false } catch {}
-            if ($fancy) { [Console]::OutputEncoding = [Text.Encoding]::UTF8 }
+            [Console]::OutputEncoding = [Text.Encoding]::UTF8   # for the emoji, and the symbols that stand in for them
         }
         while ($true) {
             if ($pump) { [System.Windows.Forms.Application]::DoEvents() }
@@ -310,6 +359,18 @@ function Start-CreekListening($base, $volume, $quiet) {
                             [void](Invoke-RestMethod -Method Post -Uri "$base/react?e=$([int]$ch - 1)&id=$id" -UseBasicParsing -TimeoutSec 2)
                             $lastPoll = [DateTime]::MinValue
                         } catch {}
+                    }
+                    elseif ($k.Key -eq 'RightArrow' -or $k.Key -eq 'LeftArrow') {
+                        $action = 'fwd'
+                        $mark = '>>'
+                        if ($k.Key -eq 'LeftArrow') { $action = 'back'; $mark = '<<' }
+                        try {
+                            $r = Invoke-RestMethod -Method Post -Uri "$base/ctl/${action}?id=$id" -UseBasicParsing -TimeoutSec 3
+                            $mine[[string]$r.notice] = $true
+                            $flash = "$mark $(Format-CreekTime $r.pos) / $(Format-CreekTime $r.dur)"
+                            $flashUntil = $t.AddSeconds(2)
+                            $lastPoll = [DateTime]::MinValue
+                        } catch { $flash = Get-CreekError $_; $flashUntil = $t.AddSeconds(3) }
                     }
                     elseif ($ch -eq ' ' -or $ch -ceq 'n' -or $ch -ceq 'p') {
                         if ($ch -eq ' ') {
@@ -352,41 +413,33 @@ function Start-CreekListening($base, $volume, $quiet) {
                     elseif ($ch -eq '/') {
                         $words = Read-CreekLine 'find a song (Enter on its own cancels)'
                         if ($words) {
-                            try {
-                                $hits = @(Invoke-RestMethod -Uri "$base/search?q=$([Uri]::EscapeDataString($words))" -UseBasicParsing -TimeoutSec 5) | ForEach-Object { $_ }
-                                $hits = @($hits)
-                                if ($hits.Count -eq 0) {
-                                    $flash = "no songs on the station match '$words' (a posts a link instead)"
-                                    $flashUntil = [DateTime]::Now.AddSeconds(5)
-                                } else {
-                                    $lines = @()
-                                    for ($i = 0; $i -lt $hits.Count; $i++) {
-                                        $lines += "  $($i + 1). $($hits[$i].song)  ($(Format-CreekTime $hits[$i].duration))"
-                                    }
-                                    Write-CreekLines $lines
-                                    $pick = Read-CreekLine "number to queue (1-$($hits.Count), Enter on its own cancels)"
-                                    if ($pick -match '^\d+$' -and [int]$pick -ge 1 -and [int]$pick -le $hits.Count) {
-                                        $r = Invoke-RestMethod -Method Post -UseBasicParsing -TimeoutSec 5 `
-                                            -Uri "$base/post?track=$($hits[[int]$pick - 1].id)&id=$id"
-                                        $flash = "~ $($r.msg) ~"
-                                        $flashUntil = [DateTime]::Now.AddSeconds(5)
-                                    }
-                                }
-                            } catch { $flash = Get-CreekError $_; $flashUntil = [DateTime]::Now.AddSeconds(5) }
+                            try { $msg = Find-CreekSong $base $id $words $false }
+                            catch { $msg = Get-CreekError $_ }
+                            if ($msg) { $flash = $msg; $flashUntil = [DateTime]::Now.AddSeconds(5) }
                         }
                     }
-                    elseif ($ch -eq 'a') {
-                        $link = Read-CreekLine 'post a song link (Enter on its own cancels)'
-                        if ($link -match '^https?://') {
+                    elseif ($ch -eq 'a' -or $ch -eq 'e') {
+                        # a: play next, at the front of the queue. e: the end of the queue. Either takes a link,
+                        # or words to find a song on the station
+                        $front = $ch -eq 'a'
+                        if ($front) { $link = Read-CreekLine 'play next - a link, or words to find a song (Enter on its own cancels)' }
+                        else { $link = Read-CreekLine 'add to the end of the queue - a link, or words to find a song (Enter on its own cancels)' }
+                        $next = ''
+                        if ($front) { $next = '&next=1' }
+                        if ($link -and $link -notmatch '^https?://') {
+                            try { $msg = Find-CreekSong $base $id $link $front }
+                            catch { $msg = Get-CreekError $_ }
+                            if ($msg) { $flash = $msg; $flashUntil = [DateTime]::Now.AddSeconds(5) }
+                        }
+                        elseif ($link -match '^https?://') {
                             try {
                                 $r = Invoke-RestMethod -Method Post -UseBasicParsing -TimeoutSec 5 `
-                                    -Uri "$base/post?url=$([Uri]::EscapeDataString($link))&id=$id"
+                                    -Uri "$base/post?url=$([Uri]::EscapeDataString($link))&id=$id$next"
                                 $postTicket = $r.ticket
                                 $flash = '~ fetching your song... ~'
                                 $flashUntil = [DateTime]::Now.AddMinutes(10)
                             } catch { $flash = Get-CreekError $_; $flashUntil = [DateTime]::Now.AddSeconds(6) }
                         }
-                        elseif ($link) { $flash = "that doesn't look like a link"; $flashUntil = [DateTime]::Now.AddSeconds(4) }
                     }
                 }
 
@@ -454,11 +507,14 @@ function Start-CreekListening($base, $volume, $quiet) {
                     $song = (@($now.title, $now.artist) | Where-Object { $_ }) -join ' - '
                     $mark = $note
                     if ($now.paused) { $mark = 'paused .' }
-                    $text = "$mark $song  .  $($now.here) here"
+                    $text = "$mark $song  .  "
+                    if ($now.dur) { $text += "$(Format-CreekTime $now.pos)/$(Format-CreekTime $now.dur)  .  " }
+                    $text += "$($now.here) here"
                     if (@($now.upnext).Count -gt 0) {
                         $text += "  .  up next: $(@($now.upnext)[0])"
                         if ($now.queued -gt 1) { $text += " +$($now.queued - 1)" }
                     }
+                    elseif ($now.next) { $text += "  .  up next: $($now.next) (shuffle)" }
                 }
                 if ($p.Kind -ne 'ffplay') { $text += "  .  vol $($p.Volume)" }
                 $w = Get-CreekWidth

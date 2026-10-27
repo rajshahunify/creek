@@ -47,3 +47,10 @@ def test_notices_count_up():
     assert r.snapshot(-1, 0)["notice"] == [0, ""]
     assert r.announce("pause") == 1 and r.announce("next") == 2
     assert r.snapshot(-1, 0)["notice"] == [2, "next"]
+
+
+def test_arrow_keys_can_be_tapped_quickly():
+    r = Room()
+    assert r.control("ana", "fwd", now=0) is None
+    assert r.control("ana", "fwd", now=0.3) is None
+    assert "one press" in r.control("ana", "back", now=0.4)

@@ -27,22 +27,25 @@ While listening (same keys on Linux and Windows, `?` shows them):
 
 | key | |
 |---|---|
-| **a** | post a song link: it plays soon, after anything already queued |
+| **a** | play a song next, ahead of the queue: paste a link, or type words to find one on the station |
+| **e** | add a song to the end of the queue, behind the songs already waiting (a link, or words, the same way) |
 | **/** | find a song already on the station, then press its number to queue it |
 | **space** / **n** / **p** | pause or play / next / previous, for everyone |
-| **l** | what's on, what's up next, what played before |
+| **← / →** | jump back / ahead 5 s in the song, for everyone |
+| **l** | what's on, what's up next (including the shuffle's pick), what played before |
 | **c** | clear the up-next queue for everyone (asks y/n first; the songs stay in the shuffle) |
-| **1–6** | drop an emoji |
+| **1–6** | drop an emoji (in the classic Windows console window, which can't draw emoji, they show as ≈ ♥ ☼ ▲ ☺ ♫; Windows Terminal shows the real ones; `CREEK_EMOJI=1` or `0` overrides) |
 | **+ / -** | volume (Windows; on Linux use `--volume N` or the system volume) |
 | **q** | leave (Ctrl+C works too) |
 
 The same things work as one-off commands, handy for keyboard shortcuts: `creek pause | play | next | prev | clear`,
-`creek queue`, `creek find <words>`, `creek post <link | #id>`. `creek --quiet` plays audio only (no status
+`creek fwd | back [seconds]`, `creek queue`, `creek find <words>`, `creek post <link | #id>` (to the back of the
+queue), `creek next <link | #id>` (to the front). `creek --quiet` plays audio only (no status
 line, no keys); `creek --volume N` sets the starting volume.
 
 **Shared controls.** Anyone listening can pause, skip or go back, for everyone; others see a short anonymous
-note ("someone skipped ahead"). Two guardrails keep it calm: one press per second per person, and when two
-people hit next at the same moment only one song is skipped. Start the station with `CREEK_OPEN_CONTROLS=0`
+note ("someone skipped ahead"). Two guardrails keep it calm: one press per second per person (the arrow keys
+can be tapped a few times a second), and when two people hit next at the same moment only one song is skipped. Start the station with `CREEK_OPEN_CONTROLS=0`
 to keep the controls to the station laptop.
 
 **How quick.** Whoever presses pause hears it at once (their own player freezes on the spot); everyone else
@@ -58,13 +61,19 @@ against Wi-Fi hiccups (`JOIN_BURST_SEC` in `creek/config.py`).
 
 ## Posting a song (any listener)
 
-Press **a** in the player, paste a YouTube link to one song, press Enter. The station downloads it and queues
-it to play **after the current song**, in the order songs were posted; everyone's status line shows what's
-up next. Each person can have one song waiting at a time (post another once yours has played), the queue
-holds up to 20, and posted songs must be 30 s – 15 min. Whole playlists go in with `creek add` instead.
+Press **a** in the player, paste a YouTube link to one song, press Enter. The station downloads it and puts
+it at the **front** of the up-next queue, so it plays as soon as the current song ends (pair it with **n** to
+hear it right away). Press **e** instead to add it to the **end** of the queue, behind the songs already
+waiting; everyone's status line shows what's up next.
 
-Songs already on the station can be queued the same way: press **/**, type a few words, then the song's
-number (or `creek find <words>` and `creek post #<id>`). **c** clears the queue for everyone after a y/n
+When nobody has posted anything, the shuffle plays. It picks its next song ahead of time, so the status line
+and **l** show exactly which song comes next either way; a posted song goes ahead of that pick, and the pick
+plays once the queue is empty again. Each person can have one song waiting at a time (post another once yours has played), the queue
+holds up to 20, and posted songs must be 30 s – 30 min. Whole playlists go in with `creek add` instead.
+
+Songs already on the station work the same way: after **a** or **e**, type a few words instead of a link,
+then the song's number (**/** does the same and adds to the end; or `creek find <words>`, then
+`creek next #<id>` or `creek post #<id>`). **c** clears the queue for everyone after a y/n
 check; cleared songs stay in the shuffle, and a song still downloading when the queue is cleared joins the
 shuffle instead of the queue.
 
@@ -74,7 +83,7 @@ shuffle instead of the queue.
 - **Links**: put YouTube (or SoundCloud, Bandcamp, …) song or playlist URLs in `~/creek/links.txt`, one per
   line. Downloaded once into `music/.yt/`; playlists (first 50 songs) are re-checked every 12 hours.
 - **From any listener**: `creek add <link | file | folder> ...` adds to the shuffle (not the up-next queue),
-  good for playlists and folders. Contributions must be 30 s – 15 min and ≤ 50 MB; duplicates are
+  good for playlists and folders. Contributions must be 30 s – 30 min and ≤ 50 MB; duplicates are
   recognised and turned away.
 
 Every track's loudness is measured once and evened out (about -16 LUFS), and leading/trailing silence is
@@ -83,12 +92,13 @@ so it never stops.
 
 ## On the station laptop
 
-The shared controls work here too (`uv run python -m creek pause | play | next | prev | clear | now`), with
-no rate limit. A few things only the station laptop can do:
+The shared controls work here too (`uv run python -m creek pause | play | next | prev | fwd | back | clear |
+now`), with no rate limit. A few things only the station laptop can do:
 
 ```sh
 uv run python -m creek play <link>            # add a YouTube link (if new) and play it right away
 uv run python -m creek play <id>              # crossfade into a song from `list` now, skipping the queue
+uv run python -m creek next <id|link>         # play a song next, ahead of the up-next queue
 uv run python -m creek list                   # every song in rotation, with ids
 uv run python -m creek remove <id|current>    # take one out for good (contributed files are deleted)
 uv run python -m creek status                 # library counts, the up-next queue, recent downloads

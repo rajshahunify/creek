@@ -56,6 +56,7 @@ class _Log:
         self.errors: list[str] = []
         self.archived = False      # downloaded on an earlier occasion
         self.filtered = False      # too short, too long, or live
+        self.skipped: dict[str, dict] = {}   # what the length/live filter turned away, by video id
 
     def debug(self, msg):
         self.archived |= "recorded in the archive" in msg
@@ -66,6 +67,24 @@ class _Log:
 
     def error(self, msg):
         self.errors.append(re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*)?", "", str(msg)).strip())
+
+
+def filtered_msg(skipped: list[dict], min_sec: int, max_sec: int) -> str:
+    """Why the filter turned a link away: the actual length when it was one song, the rule otherwise."""
+    rule = f"songs need to be {min_sec} s to {max_sec // 60} min long, and not a live stream"
+    if len(skipped) != 1:
+        return rule
+    info = skipped[0]
+    dur = info.get("duration")
+    if info.get("is_live"):
+        return "that's a live stream - only finished songs can go in"
+    if dur and dur > max_sec:
+        h, m, s = int(dur) // 3600, int(dur) % 3600 // 60, int(dur) % 60
+        length = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        return f"that one is {length} long - songs can be up to {max_sec // 60} min"
+    if dur and dur < min_sec:
+        return f"that one is only {int(dur)} s long - songs need to be at least {min_sec} s"
+    return rule
 
 
 OnReady = Callable[[int], str]          # gets the track id, returns the message for the person waiting
@@ -159,13 +178,20 @@ class Ingest:
                 handed = True
 
         log = _Log()
+        rule = match_filter_func(f"!is_live & duration >= {CONTRIB_MIN_SEC} & duration <= {max_sec}")
+
+        def keep(info, incomplete=False):
+            if (why := rule(info, incomplete)) is not None:
+                log.skipped[info.get("id") or why] = info
+            return why
+
         opts = {
             "format": "bestaudio/best",
             "outtmpl": str(MUSIC / ".yt" / "%(id)s.%(ext)s"),
             "paths": {"temp": str(TMP)},
             "download_archive": str(DATA / "yt-archive.txt"),
             "playlistend": PLAYLIST_CAP,
-            "match_filter": match_filter_func(f"!is_live & duration >= {CONTRIB_MIN_SEC} & duration <= {max_sec}"),
+            "match_filter": keep,
             "postprocessors": [{"key": "FFmpegMetadata", "add_chapters": False, "add_infojson": False}],
             "post_hooks": [done],
             "ignoreerrors": True,
@@ -185,8 +211,7 @@ class Ingest:
         elif log.errors:
             t.status, t.msg = "failed", log.errors[-1][:200]
         elif log.filtered:
-            t.status, t.msg = "failed", (f"songs need to be {CONTRIB_MIN_SEC} s to {max_sec // 60} min long, "
-                                         "and not a live stream")
+            t.status, t.msg = "failed", filtered_msg(list(log.skipped.values()), CONTRIB_MIN_SEC, max_sec)
         elif log.archived and on_ready:
             t.status, t.msg = "failed", "that one was taken out of the stream"
         elif log.archived:

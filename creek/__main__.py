@@ -1,4 +1,4 @@
-"""python -m creek [serve | now | play [id|link] | pause | next | prev | clear | list | remove <id|current> | status]"""
+"""python -m creek [serve | now | play [id|link] | pause | next [id|link] | prev | fwd | back | clear | list | ...]"""
 
 import json
 import socket
@@ -19,7 +19,10 @@ USAGE = """usage: python -m creek [command]
   play <link>          add a YouTube link if it's new, then play it straight away
   pause                fade out for everyone; listeners stay connected
   next                 crossfade to the next song (also: skip)
+  next <id|link>       play that song next, ahead of the up-next queue (a link is added if it's new)
   prev                 back to the previous song
+  fwd [seconds]        jump ahead in this song (default 5 s)
+  back [seconds]       jump back in this song (default 5 s)
   clear                empty the up-next queue (the songs stay on the station)
   list                 every song in rotation, with ids
   remove <id|current>  take a song out of rotation for good
@@ -52,7 +55,8 @@ def serve():
   share this:   curl http://{ip}:{PORT}            (or http://{name}.local:{PORT})
   music folder: {MUSIC}
   links file:   {LINKS}
-  controls:     uv run python -m creek play [id|link] | pause | next | prev | clear | now | list | status
+  controls:     uv run python -m creek play [id|link] | pause | next [id|link] | prev | fwd | back | clear
+                uv run python -m creek now | list | status
 """, flush=True)
     uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False, log_level="warning",
                 timeout_graceful_shutdown=2)
@@ -69,9 +73,23 @@ def main(argv: list[str]):
         if n.get("upnext"):
             more = n["queued"] - len(n["upnext"])
             print("up next: " + ", ".join(n["upnext"]) + (f" (+{more} more)" if more > 0 else ""))
-    elif cmd in ("next", "skip"):
+        elif n.get("next"):
+            print(f"up next: {n['next']} (shuffle)")
+    elif cmd in ("next", "skip") and not args:
         call("POST", "/op/next")
         print("on to the next one…")
+    elif cmd == "next" and len(args) == 1 and args[0].lstrip("#").isdigit():
+        print(call("POST", f"/op/playnext?id={args[0].lstrip('#')}")["msg"])
+    elif cmd == "next" and len(args) == 1 and args[0].startswith(("http://", "https://")):
+        ticket = call("POST", "/op/playnext?url=" + urllib.parse.quote(args[0], safe=""))["ticket"]
+        print("fetching", end="", flush=True)
+        while (t := call("GET", f"/add/{ticket}"))["status"] not in ("done", "failed"):
+            time.sleep(1)
+            print(".", end="", flush=True)
+        print(f"\r{t['msg']}" + " " * 20)
+    elif cmd in ("fwd", "back") and len(args) <= 1 and all(a.isdigit() for a in args):
+        r = call("POST", f"/op/{cmd}" + (f"?by={args[0]}" if args else ""))
+        print(f"{'⏩' if cmd == 'fwd' else '⏪'} {r['pos'] // 60}:{r['pos'] % 60:02d} / {r['dur'] // 60}:{r['dur'] % 60:02d}")
     elif cmd == "prev":
         call("POST", "/op/prev")
         print("going back…")
@@ -107,6 +125,8 @@ def main(argv: list[str]):
         print("tracks: " + (", ".join(f"{v} {k}" for k, v in sorted(s["tracks"].items())) or "none yet"))
         for i, title in enumerate(s["upnext"], 1):
             print(f"  up next {i}: {title}")
+        if s.get("shuffle_next"):
+            print(f"  {'then' if s['upnext'] else 'up next'} (shuffle): {s['shuffle_next']}")
         for j in s["jobs"]:
             print(f"  [{j['status']}] {j['what']}  {j['msg']}")
     else:

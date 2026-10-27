@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import random
@@ -25,26 +26,31 @@ WATER = "~~ ~~~ ~ ~~~~  ~~ ~ ~~~ ~~  ~ ~~~~ ~ "
 RIVER_WIDTH = 26
 AUDIO_EXTS = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".webm", ".wma", ".mka"}
 MAX_UPLOAD = 50 * 1024 * 1024
+KEY = re.compile(r"\x1b\[[0-9;]*[~A-Za-z]|\x1bO[A-Za-z]|.", re.S)   # one keypress: an escape sequence or a character
 
 USAGE = """creek                      join the stream (press ? while listening for the keys)
 creek --quiet              audio only: no status line, no keys (fine to run in the background)
 creek --volume N           start at volume N, 0-100 (default 60)
 creek pause | play | next | prev | clear    control the stream for everyone
+creek fwd | back [seconds]                 jump ahead / back in this song (5 s), for everyone
 creek queue                what's on, what's up next, what played before
 creek find <words>         look for a song on the station
-creek post <link | number from find>   queue a song to play soon
+creek post <link | number from find>   queue a song (it plays after the songs already waiting)
+creek next <link | number from find>   play a song next, ahead of the queue
 creek add <link|file|folder> ...   add music to the shuffle"""
 
 HELP = [
-    "  keys   a  post a song link (plays soon)      /  find a song on the station to queue",
-    "         space  pause / play    n  next    p  previous    l  what's on & up next    c  clear the queue",
-    "         1-6  drop an emoji     ?  this help    q  leave",
+    "  keys   a  play a song next (a link, or words to find one)    e  add one to the end of the queue    / find",
+    "         space  pause / play    n  next    p  previous    ← →  jump 5 s    l  what's on & up next",
+    "         c  clear the queue     1-6  drop an emoji     ?  this help    q  leave",
 ]
 DONE = {"pause": "⏸ paused for everyone", "resume": "▶ playing", "next": "⏭ next song", "prev": "⏮ previous song",
         "clear": "queue cleared"}
 SEEN = {"pause": "⏸ someone paused the stream", "resume": "▶ someone pressed play",
         "next": "⏭ someone skipped ahead", "prev": "⏮ someone went back a song",
-        "clear": "someone cleared the up-next queue"}
+        "clear": "someone cleared the up-next queue",
+        "fwd": "⏩ someone jumped ahead 5 s", "back": "⏪ someone jumped back 5 s"}
+ARROWS = {"\x1b[C": "fwd", "\x1bOC": "fwd", "\x1b[D": "back", "\x1bOD": "back"}
 
 
 def url(path: str) -> str:
@@ -86,9 +92,14 @@ def queue_lines(q: dict) -> list[str]:
     lines = [f"  now      {'⏸ ' if q['paused'] else '♪ '}{q['now']}"]
     for i, song in enumerate(q["upnext"], 1):
         lines.append(f"  {'up next' if i == 1 else '':8} {i}. {song}" + ("      (c clears the queue)" if i == 1 else ""))
+    pick, rest = q.get("shuffle_next"), f"the shuffle, {q['songs']} songs"
     if not q["upnext"]:
-        lines.append("  up next  nothing posted yet, so the shuffle picks")
-    lines.append(f"  then     the shuffle, {q['songs']} songs")
+        lines.append(f"  up next  {pick}   (the shuffle's pick)" if pick else
+                     "  up next  nothing posted yet, so the shuffle picks")
+        lines.append(f"  then     {'the rest of ' if pick else ''}{rest}")
+    else:
+        lines.append(f"  then     {pick}   (the shuffle's pick), then the rest of {rest}" if pick else
+                     f"  then     {rest}")
     if q["earlier"]:
         lines.append("  earlier  " + "  ·  ".join(q["earlier"][:3]))
     return lines
@@ -134,8 +145,9 @@ class Listener:
         self.offline = False
         self.trouble = ""
         self.flash = ("", 0.0)               # short-lived message and when it expires
-        self.typing: tuple[str, str] | None = None   # ("post" | "find", text so far)
+        self.typing: tuple[str, str, int] | None = None   # ("post" | "find" | "next", text so far, cursor)
         self.picks: list[dict] | None = None         # search results waiting for a number
+        self.picks_next = False                      # ...and whether the chosen one plays next
         self.asking: tuple[str, str] | None = None   # (question, control) waiting for y/n
         self.mine: set[int] = set()          # notices we caused ourselves (no "someone paused" for those)
         self.last_notice: int | None = None
@@ -154,7 +166,7 @@ class Listener:
             threads += [threading.Thread(target=f, daemon=True) for f in (self.poll, self.keys, self.draw)]
         for t in threads:
             t.start()
-        self.say_soon("~ a post a song · / find one · space pause · n next · ? all keys · q leave ~", 6)
+        self.say_soon("~ a play a song next · e add one to the queue · space pause · ? all keys · q leave ~", 6)
         while not self.stop.is_set():
             self.stop.wait(0.5)
         for t in threads:
@@ -257,6 +269,9 @@ class Listener:
         self.mine.add(r.get("notice"))
         if action == "clear":
             return self.say_soon(cleared_text(r["cleared"]), 4)
+        if action in ("fwd", "back"):
+            self.say_soon(f"{'⏩' if action == 'fwd' else '⏪'} {mmss(r.get('pos'))} / {mmss(r.get('dur'))}", 2)
+            return self.poke.set()
         if action == "pause":
             self.hold()
         elif self.held:
@@ -271,14 +286,15 @@ class Listener:
         except (OSError, ValueError):
             pass
 
-    def post(self, link: str):
-        """Send a song link; it downloads on the station and queues up to play after the current song."""
+    def post(self, link: str, front: bool = False):
+        """Send a song link; it downloads on the station and queues up to play after the current song
+        (behind the songs already waiting, or ahead of them when front=True)."""
         if not re.match(r"https?://", link):
             return self.say_soon("that doesn't look like a link", 4)
         self.say_soon("~ fetching your song… ~", 600)
         try:
-            ticket = call(f"/post?url={urllib.parse.quote(link, safe='')}&id={self.id}", method="POST",
-                          data=b"")["ticket"]
+            ticket = call(f"/post?url={urllib.parse.quote(link, safe='')}&id={self.id}" + ("&next=1" if front else ""),
+                          method="POST", data=b"")["ticket"]
             status = {}
             while not self.stop.is_set() and status.get("status") not in ("done", "failed"):
                 self.stop.wait(1.5)
@@ -288,19 +304,19 @@ class Listener:
             self.say_soon(error_text(e), 6)
         self.poke.set()
 
-    def find(self, words: str):
+    def find(self, words: str, front: bool = False):
         try:
             hits = call(f"/search?q={urllib.parse.quote(words)}")
         except (OSError, ValueError) as e:
             return self.say_soon(error_text(e), 4)
         if not hits:
-            return self.say_soon(f"no songs on the station match '{words}' (a posts a link instead)", 5)
+            return self.say_soon(f"no songs on the station match '{words}' (a takes a link instead)", 5)
         self.say([f"  {i}. {h['song']}  ({mmss(h['duration'])})" for i, h in enumerate(hits, 1)])
-        self.picks = hits
+        self.picks, self.picks_next = hits, front
 
-    def queue_pick(self, hit: dict):
+    def queue_pick(self, hit: dict, front: bool):
         try:
-            r = call(f"/post?track={hit['id']}&id={self.id}", method="POST", data=b"")
+            r = call(f"/post?track={hit['id']}&id={self.id}" + ("&next=1" if front else ""), method="POST", data=b"")
             self.say_soon(f"~ {r['msg']} ~", 5)
         except (OSError, ValueError, KeyError) as e:
             self.say_soon(error_text(e), 5)
@@ -324,9 +340,16 @@ class Listener:
         old = termios.tcgetattr(fd)
         try:
             tty.setcbreak(fd)
+            decode = codecs.getincrementaldecoder("utf-8")(errors="ignore").decode
             while not self.stop.is_set():
-                if select.select([fd], [], [], 0.2)[0]:
-                    self.key(os.read(fd, 1).decode(errors="ignore"))
+                if not select.select([fd], [], [], 0.2)[0]:
+                    continue
+                buf = decode(os.read(fd, 1024))
+                # an arrow key is several bytes (ESC [ D); make sure we have all of it, not a lone Esc
+                while re.search(r"\x1b(\[[0-9;]*|O)?$", buf) and select.select([fd], [], [], 0.05)[0]:
+                    buf += decode(os.read(fd, 1024))
+                for ch in KEY.findall(buf):
+                    self.key(ch)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
             os.close(fd)
@@ -338,7 +361,7 @@ class Listener:
         if self.picks is not None:
             hits, self.picks = self.picks, None
             if ch.isdigit() and 1 <= int(ch) <= len(hits):
-                return bg(self.queue_pick, hits[int(ch) - 1])
+                return bg(self.queue_pick, hits[int(ch) - 1], self.picks_next)
             return self.say_soon("~ never mind ~", 1.5)
         if self.asking is not None:
             _, action = self.asking
@@ -349,9 +372,13 @@ class Listener:
         if ch in ("q", "Q"):
             self.stop.set()
         elif ch in ("a", "A"):
-            self.typing = ("post", "")
+            self.typing = ("next", "", 0)
+        elif ch in ("e", "E"):
+            self.typing = ("post", "", 0)
         elif ch == "/":
-            self.typing = ("find", "")
+            self.typing = ("find", "", 0)
+        elif ch in ARROWS:
+            bg(self.control, ARROWS[ch])
         elif ch and ch in "123456":
             bg(self.react, int(ch) - 1)
         elif ch in (" ", "n", "p"):
@@ -364,18 +391,28 @@ class Listener:
             self.say(HELP)
 
     def type_key(self, ch: str):
-        kind, text = self.typing
+        kind, text, at = self.typing
         if ch in ("\r", "\n"):
             self.typing = None
-            if text.strip():
-                threading.Thread(target=self.post if kind == "post" else self.find, args=(text.strip(),),
-                                 daemon=True).start()
+            text, front = text.strip(), kind == "next"
+            if text:
+                # a or e: a link, or words to find a song on the station
+                link = kind != "find" and re.match(r"https?://", text)
+                threading.Thread(target=self.post if link else self.find, args=(text, front), daemon=True).start()
         elif ch == "\x1b":
             self.typing = None
         elif ch in ("\x7f", "\b"):
-            self.typing = (kind, text[:-1])
+            self.typing = (kind, text[:at - 1] + text[at:], at - 1) if at else self.typing
+        elif ch == "\x1b[3~":                          # Delete
+            self.typing = (kind, text[:at] + text[at + 1:], at)
+        elif ch == "\x15":                             # Ctrl+U
+            self.typing = (kind, "", 0)
+        elif ch.startswith("\x1b") or ch in ("\x01", "\x05"):
+            move = {"D": at - 1, "C": at + 1, "H": 0, "1~": 0, "7~": 0, "F": len(text), "4~": len(text),
+                    "8~": len(text), "\x01": 0, "\x05": len(text)}.get(ch.lstrip("\x1b[O"), at)
+            self.typing = (kind, text, max(0, min(len(text), move)))
         elif ch.isprintable():
-            self.typing = (kind, text + ch)
+            self.typing = (kind, text[:at] + ch + text[at:], at + 1)
 
     # --- the screen ----------------------------------------------------------------------------
 
@@ -411,11 +448,19 @@ class Listener:
         dim, reset = ("\x1b[2m", "\x1b[0m") if self.color else ("", "")
         n = self.now
         if self.typing is not None:
-            kind, text = self.typing
-            label = ("post a song link" if kind == "post" else "find a song") + " (Enter goes, Esc cancels): "
-            return label + text[-max(10, cols - RIVER_WIDTH - len(label) - 4):] + "_"
+            kind, text, at = self.typing
+            label = {"post": "add to the end of the queue - a link, or words to find a song", "find": "find a song",
+                     "next": "play next - a link, or words to find a song"}[kind] + " (Enter goes, Esc cancels): "
+            room = max(10, cols - RIVER_WIDTH - len(label) - 4)
+            start = max(0, at - room + 1)            # keep the cursor in view
+            shown, here = text[start:start + room], at - start
+            if not self.color:
+                return label + shown[:here] + ("_" if here == len(shown) else "|") + shown[here:]
+            under = shown[here] if here < len(shown) else " "
+            return label + shown[:here] + f"\x1b[7m{under}\x1b[27m" + shown[here + 1:]
         if self.picks is not None:
-            return f"press 1-{len(self.picks)} to queue one of those, any other key to cancel"
+            what = "play one of those next" if self.picks_next else "queue one of those"
+            return f"press 1-{len(self.picks)} to {what}, any other key to cancel"
         if self.asking is not None:
             return self.asking[0]
         if self.offline:
@@ -429,10 +474,15 @@ class Listener:
         if n.get("quiet"):
             return f"quiet water - no music yet (a posts a song)  {dim}·  {n['here']} here{reset}"
         song = " - ".join(x for x in (n.get("title"), n.get("artist")) if x)
-        text = f"{'⏸ paused ·' if n.get('paused') else '♪'} {song}  {dim}·  {n['here']} here"
+        text = f"{'⏸ paused ·' if n.get('paused') else '♪'} {song}  {dim}"
+        if n.get("dur"):
+            text += f"{mmss(n.get('pos'))}/{mmss(n['dur'])}  ·  "
+        text += f"{n['here']} here"
         if n.get("upnext"):
             more = n.get("queued", 1) - 1
             text += f"  ·  up next: {n['upnext'][0]}" + (f" +{more}" if more > 0 else "")
+        elif n.get("next"):
+            text += f"  ·  up next: {n['next']} (shuffle)"
         return text + reset
 
     def draw(self):
@@ -524,6 +574,9 @@ def command(argv: list[str]) -> bool:
             action = "resume" if cmd == "play" else cmd
             r = call(f"/ctl/{action}?id={listener_id()}", method="POST", data=b"")
             print(cleared_text(r["cleared"]) if action == "clear" else DONE[action])
+        elif cmd in ("fwd", "back") and len(args) <= 1 and all(a.isdigit() for a in args):
+            r = call(f"/ctl/{cmd}?id={listener_id()}" + (f"&by={args[0]}" if args else ""), method="POST", data=b"")
+            print(f"{'⏩' if cmd == 'fwd' else '⏪'} {mmss(r['pos'])} / {mmss(r['dur'])}")
         elif cmd == "queue" and not args:
             print("\n".join(queue_lines(call("/queue"))))
         elif cmd == "find" and args:
@@ -532,12 +585,14 @@ def command(argv: list[str]) -> bool:
                 print(f"  {i}. {h['song']}  ({mmss(h['duration'])})   creek post #{h['id']}")
             if not hits:
                 print("no songs on the station match that")
-        elif cmd == "post" and len(args) == 1:
+        elif cmd in ("post", "next") and len(args) == 1:
+            front = "&next=1" if cmd == "next" else ""
             if args[0].lstrip("#").isdigit():
-                print(call(f"/post?track={args[0].lstrip('#')}&id={listener_id()}", method="POST", data=b"")["msg"])
+                print(call(f"/post?track={args[0].lstrip('#')}&id={listener_id()}{front}", method="POST",
+                           data=b"")["msg"])
             else:
                 q = urllib.parse.quote(args[0], safe="")
-                t = call(f"/post?url={q}&id={listener_id()}", method="POST", data=b"")["ticket"]
+                t = call(f"/post?url={q}&id={listener_id()}{front}", method="POST", data=b"")["ticket"]
                 print("fetching", end="", flush=True)
                 while (s := call(f"/add/{t}"))["status"] not in ("done", "failed"):
                     time.sleep(1.5)

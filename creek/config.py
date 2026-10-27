@@ -23,6 +23,9 @@ BYTES_PER_SEC = RATE * FRAME_BYTES
 BLOCK_SEC = 0.1           # playout granularity
 CROSSFADE_SEC = 6.0       # overlap between consecutive tracks
 SKIP_FADE_SEC = 0.6       # quick crossfade for next / prev / play
+SEEK_SEC = 5.0            # how far the arrow keys jump within a song
+SEEK_FADE_SEC = 0.15      # tiny crossfade so a jump doesn't click
+SEEK_HISTORY_SEC = 60.0   # audio kept after it plays, so jumping back is instant
 PAUSE_FADE_SEC = 0.3      # pause and resume fade just enough not to click
 RESUME_FADE_SEC = 0.3
 LOOKAHEAD_SEC = 16.0      # decoded ahead so trailing silence can be trimmed before the crossfade
@@ -40,7 +43,7 @@ SETTLE_SEC = 10           # ignore files modified more recently than this (still
 
 # folder music (the operator's own) is trusted a bit more than contributions
 FOLDER_MIN_SEC, FOLDER_MAX_SEC = 30, 60 * 60
-CONTRIB_MIN_SEC, CONTRIB_MAX_SEC = 30, 15 * 60
+CONTRIB_MIN_SEC, CONTRIB_MAX_SEC = 30, 30 * 60
 CONTRIB_MAX_BYTES = 50 * 1024 * 1024
 PLAYLIST_CAP = 50
 LINKS_REFRESH_SEC = 12 * 3600
@@ -49,4 +52,5 @@ LINKS_REFRESH_SEC = 12 * 3600
 REACTIONS = ["🌊", "💛", "✨", "🔥", "😌", "🎶"]
 REACT_MIN_GAP_SEC = 1.5
 CONTROL_MIN_GAP_SEC = 1.0  # per listener, between pause/next/prev presses
+SEEK_MIN_GAP_SEC = 0.25    # arrow keys can be tapped a few times in a row
 JUMP_GUARD_SEC = 2.0       # two people pressing next at once skip one song, not two
